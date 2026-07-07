@@ -1,0 +1,609 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>NSO Clinic Simulator</title>
+<style>
+  :root {
+    --bg: #06111f;
+    --panel: #0e2035;
+    --accent: #00e5c7;
+    --accent-soft: #66ffe3;
+    --text-dim: #b8c8d8;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: Arial, "Noto Sans TC", sans-serif;
+    background: var(--bg);
+    color: #fff;
+  }
+  .app {
+    display: grid;
+    grid-template-columns: 300px 1fr 1fr;
+    gap: 16px;
+    padding: 18px;
+  }
+  .header-row {
+    grid-column: 1 / 4;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+  }
+  h1 {
+    margin: 0;
+    color: var(--accent-soft);
+    font-size: 20px;
+    flex: 1;
+  }
+  .panel {
+    background: var(--panel);
+    border-radius: 16px;
+    padding: 16px;
+    box-shadow: 0 0 20px rgba(0, 255, 220, 0.10);
+  }
+  h2 { margin-top: 0; color: #9fffe8; font-size: 17px; }
+  label { display: block; margin-top: 11px; font-size: 13px; }
+  input, select { width: 100%; margin-top: 5px; }
+  button {
+    width: 100%;
+    margin-top: 16px;
+    padding: 12px;
+    border: 0;
+    border-radius: 12px;
+    background: var(--accent);
+    color: #021014;
+    font-weight: 700;
+    font-size: 15px;
+    cursor: pointer;
+  }
+  canvas { width: 100%; background: #000; border-radius: 12px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .score { font-size: 20px; color: #00ffd0; font-weight: bold; }
+  .caption { font-size: 12px; color: var(--text-dim); line-height: 1.45; }
+  .small { font-size: 12px; color: #d7e7f4; }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- Header row -->
+  <div class="header-row">
+    <h1 data-i18n="title">NSO Clinic Simulator | Zernike -> PSF -> MTF -> Blue-noise Optimization</h1>
+  </div>
+
+  <!-- Control panel -->
+  <div class="panel">
+    <h2 data-i18n="panelInput">Clinical / HOA Input</h2>
+
+    <label>
+      <span data-i18n="labelPupil">Pupil Size</span>
+      <span id="pupilVal">5.5</span> mm
+    </label>
+    <input id="pupil" type="range" min="3" max="7" step="0.1" value="5.5">
+
+    <label>
+      <span data-i18n="labelDefocus">Defocus / Residual Blur</span>
+      <span id="defocusVal">0.20</span>
+    </label>
+    <input id="defocus" type="range" min="-1" max="1" step="0.01" value="0.20">
+
+    <label>
+      <span data-i18n="labelAstig">Astigmatism</span>
+      <span id="astigVal">0.25</span>
+    </label>
+    <input id="astig" type="range" min="0" max="1" step="0.01" value="0.25">
+
+    <label>
+      <span data-i18n="labelComa">Coma</span>
+      <span id="comaVal">0.45</span>
+    </label>
+    <input id="coma" type="range" min="0" max="1" step="0.01" value="0.45">
+
+    <label>
+      <span data-i18n="labelSph">Spherical Aberration</span>
+      <span id="sphVal">0.55</span>
+    </label>
+    <input id="sph" type="range" min="0" max="1" step="0.01" value="0.55">
+
+    <label>
+      <span data-i18n="labelGlare">Glare Sensitivity</span>
+      <span id="glareVal">0.70</span>
+    </label>
+    <input id="glare" type="range" min="0" max="1" step="0.01" value="0.70">
+
+    <label>
+      <span data-i18n="labelNso">NSO Strength</span>
+      <span id="nsoVal">0.65</span>
+    </label>
+    <input id="nso" type="range" min="0" max="1" step="0.01" value="0.65">
+
+    <label data-i18n="labelSa">NSO SA Module</label>
+    <select id="sa">
+      <option value="0.35" data-i18n-opt="saOpt1">1-3-2 D | Mild</option>
+      <option value="0.60" selected data-i18n-opt="saOpt2">3-5-4 D | Standard</option>
+      <option value="0.85" data-i18n-opt="saOpt3">5-8-6 D | Strong</option>
+    </select>
+
+    <button onclick="renderAll()" data-i18n="btnApply">Apply NSO Optical Simulation</button>
+
+    <div class="grid2">
+      <div>
+        <p data-i18n="metricMTF">MTF Recovery</p>
+        <div class="score" id="mtfScore">--</div>
+      </div>
+      <div>
+        <p data-i18n="metricEntropy">Entropy Index</p>
+        <div class="score" id="entropy">--</div>
+      </div>
+    </div>
+    <p data-i18n="metricRisk">Adaptation Risk</p>
+    <div class="score" id="risk">--</div>
+
+    <p class="caption" data-i18n="captionMethod">
+      Uses simplified Fourier optics: Zernike wavefront -> pupil function -> FFT PSF
+      -> scene convolution. The "After" view simulates blue-noise pupil modulation
+      + peripheral contrast redistribution.
+    </p>
+  </div>
+
+  <!-- Before panel -->
+  <div class="panel">
+    <h2 data-i18n="panelBefore">Before | Traditional Optical Field</h2>
+    <canvas id="before" width="640" height="480"></canvas>
+    <p class="caption" data-i18n="captionBefore">
+      PSF spread from HOA/Zernike aberrations: halo, ghost images, and reduced night-time contrast.
+    </p>
+    <canvas id="psfBefore" width="220" height="220"></canvas>
+    <p class="small" data-i18n="labelPsfBefore">Before PSF</p>
+  </div>
+
+  <!-- After panel -->
+  <div class="panel">
+    <h2 data-i18n="panelAfter">After | NSO Optimized Field</h2>
+    <canvas id="after" width="640" height="480"></canvas>
+    <p class="caption" data-i18n="captionAfter">
+      NSO redistributes concentrated glare energy into a non-periodic, high-frequency
+      statistical light field, reducing ghost images and neural adaptation load.
+    </p>
+    <canvas id="psfAfter" width="220" height="220"></canvas>
+    <p class="small" data-i18n="labelPsfAfter">After PSF + blue-noise redistribution</p>
+  </div>
+
+</div><!-- .app -->
+
+<script>
+"use strict";
+
+// ---------------------------------------------------------------------------
+// i18n
+// ---------------------------------------------------------------------------
+const STRINGS = {
+  en: {
+    title:         "NSO Clinic Simulator | Zernike -> PSF -> MTF -> Blue-noise Optimization",
+    panelInput:    "Clinical / HOA Input",
+    labelPupil:    "Pupil Size",
+    labelDefocus:  "Defocus / Residual Blur",
+    labelAstig:    "Astigmatism",
+    labelComa:     "Coma",
+    labelSph:      "Spherical Aberration",
+    labelGlare:    "Glare Sensitivity",
+    labelNso:      "NSO Strength",
+    labelSa:       "NSO SA Module",
+    saOpt1:        "1-3-2 D | Mild",
+    saOpt2:        "3-5-4 D | Standard",
+    saOpt3:        "5-8-6 D | Strong",
+    btnApply:      "Apply NSO Optical Simulation",
+    metricMTF:     "MTF Recovery",
+    metricEntropy: "Entropy Index",
+    metricRisk:    "Adaptation Risk",
+    captionMethod: "Uses simplified Fourier optics: Zernike wavefront -> pupil function -> FFT PSF -> scene convolution. The \"After\" view simulates blue-noise pupil modulation + peripheral contrast redistribution.",
+    panelBefore:   "Before | Traditional Optical Field",
+    captionBefore: "PSF spread from HOA/Zernike aberrations: halo, ghost images, and reduced night-time contrast.",
+    labelPsfBefore:"Before PSF",
+    panelAfter:    "After | NSO Optimized Field",
+    captionAfter:  "NSO redistributes concentrated glare energy into a non-periodic, high-frequency statistical light field, reducing ghost images and neural adaptation load.",
+    labelPsfAfter: "After PSF + blue-noise redistribution",
+  },
+};
+
+function applyLang() {
+  const s = STRINGS.en;
+  document.documentElement.lang = "en";
+
+  // text nodes
+  document.querySelectorAll("[data-i18n]").forEach((el) => {
+    const key = el.dataset.i18n;
+    if (s[key] !== undefined) el.textContent = s[key];
+  });
+
+  // select options
+  document.querySelectorAll("[data-i18n-opt]").forEach((el) => {
+    const key = el.dataset.i18nOpt;
+    if (s[key] !== undefined) el.textContent = s[key];
+  });
+
+  document.title = "NSO Clinic Simulator";
+}
+
+// ---------------------------------------------------------------------------
+// Optical simulation constants
+// ---------------------------------------------------------------------------
+const N = 128;
+const sceneW = 640, sceneH = 480;
+const CONV_W = 320, CONV_H = 240;
+const MAX_TAPS = 120;
+
+const SLIDER_IDS = ["pupil", "defocus", "astig", "coma", "sph", "glare", "nso"];
+
+SLIDER_IDS.forEach((id) => {
+  document.getElementById(id).oninput = () => {
+    document.getElementById(id + "Val").innerText =
+      Number(document.getElementById(id).value).toFixed(id === "pupil" ? 1 : 2);
+  };
+});
+
+function params() {
+  const get = (id) => Number(document.getElementById(id).value);
+  return {
+    pupil:  get("pupil"),  defocus: get("defocus"), astig: get("astig"),
+    coma:   get("coma"),   sph:     get("sph"),     glare: get("glare"),
+    nso:    get("nso"),    sa:      get("sa"),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Wavefront (simplified Zernike) & pupil function
+// ---------------------------------------------------------------------------
+
+function zernikeWave(x, y, p, after) {
+  const r = Math.sqrt(x * x + y * y);
+  if (r > 1) return 0;
+  const th = Math.atan2(y, x);
+
+  let d   = p.defocus * (2 * r * r - 1);
+  let ast = p.astig   * r * r * Math.cos(2 * th);
+  let com = p.coma    * (3 * r * r * r - 2 * r) * Math.cos(th);
+  let sph = p.sph     * (6 * r * r * r * r - 6 * r * r + 1);
+
+  if (after) {
+    // NSO does not erase HOAs; it redistributes and reduces coherent peaks
+    d   *= 0.75;
+    ast *= 0.70;
+    com *= (1 - 0.45 * p.nso);
+    sph *= (1 - 0.55 * p.nso);
+  }
+  return 4.0 * (d + ast + com + sph);
+}
+
+// Hash-based blue-noise gate - spatially de-correlates pupil energy peaks
+function blueNoiseGate(i, j, p) {
+  const v = Math.sin(i * 12.9898 + j * 78.233) * 43758.5453;
+  const rnd = v - Math.floor(v);
+  return rnd < (0.08 + 0.22 * p.nso) ? 0.72 : 1.0;
+}
+
+function hash01(seed) {
+  const v = Math.sin(seed * 12.9898) * 43758.5453;
+  return v - Math.floor(v);
+}
+
+function makePSF(p, after) {
+  const real = new Float32Array(N * N);
+  const imag = new Float32Array(N * N);
+
+  for (let y = 0; y < N; y++) {
+    for (let x = 0; x < N; x++) {
+      const nx = (x - N / 2) / (N / 2);
+      const ny = (y - N / 2) / (N / 2);
+      const r  = Math.sqrt(nx * nx + ny * ny);
+      if (r > 1) continue;
+
+      const phase = zernikeWave(nx, ny, p, after);
+      let amp = 1;
+      if (after) {
+        const peripheral = Math.max(0, (r - 0.38) / 0.62);
+        amp *= (1 - 0.18 * p.nso * peripheral);
+        amp *= blueNoiseGate(x, y, p);
+      }
+      const k = y * N + x;
+      real[k] = amp * Math.cos(phase);
+      imag[k] = amp * Math.sin(phase);
+    }
+  }
+
+  fft2(real, imag, N, false);
+
+  const psf = new Float32Array(N * N);
+  let sum = 0;
+  for (let i = 0; i < N * N; i++) {
+    psf[i] = real[i] * real[i] + imag[i] * imag[i];
+    sum += psf[i];
+  }
+  const invSum = 1 / sum;
+  for (let i = 0; i < N * N; i++) psf[i] *= invSum;
+  return psf;
+}
+
+// ---------------------------------------------------------------------------
+// FFT 2D - radix-2 Cooley-Tukey, in-place
+// ---------------------------------------------------------------------------
+
+function fft2(re, im, n, inv) {
+  for (let y = 0; y < n; y++) fft1(re, im, y * n, 1,  n, inv); // rows
+  for (let x = 0; x < n; x++) fft1(re, im, x,     n,  n, inv); // cols
+}
+
+function fft1(re, im, start, step, n, inv) {
+  for (let i = 1, j = 0; i < n; i++) {
+    let bit = n >> 1;
+    for (; j & bit; bit >>= 1) j ^= bit;
+    j ^= bit;
+    if (i < j) {
+      const a = start + i * step, b = start + j * step;
+      let tmp = re[a]; re[a] = re[b]; re[b] = tmp;
+          tmp = im[a]; im[a] = im[b]; im[b] = tmp;
+    }
+  }
+  for (let len = 2; len <= n; len <<= 1) {
+    const ang = 2 * Math.PI / len * (inv ? 1 : -1);
+    const wlr = Math.cos(ang), wli = Math.sin(ang);
+    for (let i = 0; i < n; i += len) {
+      let wr = 1, wi = 0;
+      for (let j = 0; j < len / 2; j++) {
+        const u = start + (i + j) * step;
+        const v = start + (i + j + len / 2) * step;
+        const tr = re[v] * wr - im[v] * wi;
+        const ti = re[v] * wi + im[v] * wr;
+        re[v] = re[u] - tr; im[v] = im[u] - ti;
+        re[u] += tr;        im[u] += ti;
+        const nwr = wr * wlr - wi * wli;
+        wi = wr * wli + wi * wlr;
+        wr = nwr;
+      }
+    }
+  }
+  if (inv) {
+    const invN = 1 / n;
+    for (let i = 0; i < n; i++) {
+      const a = start + i * step; re[a] *= invN; im[a] *= invN;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Night-time scene: street lights, road markings, acuity chart
+// ---------------------------------------------------------------------------
+
+function drawSceneToImageData() {
+  const c = document.createElement("canvas");
+  c.width = sceneW; c.height = sceneH;
+  const ctx = c.getContext("2d");
+
+  ctx.fillStyle = "#000"; ctx.fillRect(0, 0, sceneW, sceneH);
+  ctx.fillStyle = "#101820"; ctx.fillRect(0, 300, 640, 180);
+
+  // road lane markings
+  ctx.strokeStyle = "#ffdf70"; ctx.lineWidth = 3;
+  for (let i = 0; i < 5; i++) {
+    ctx.beginPath();
+    ctx.moveTo(300 + i * 20, 480);
+    ctx.lineTo(330 + i * 4, 310);
+    ctx.stroke();
+  }
+
+  // acuity text
+  ctx.fillStyle = "#fff"; ctx.font = "34px Arial";
+  ctx.fillText("NSO 20/20", 230, 120);
+
+  // point-source lights with radial gradient halos
+  [[150, 230, 13], [490, 230, 13], [320, 190, 9], [80, 80, 5], [560, 95, 5]].forEach(([x, y, r]) => {
+    const g = ctx.createRadialGradient(x, y, 0, x, y, r * 2.4);
+    g.addColorStop(0, "white");
+    g.addColorStop(0.35, "#fff0a0");
+    g.addColorStop(1, "rgba(255,255,255,0)");
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(x, y, r * 2.4, 0, Math.PI * 2);
+    ctx.fill();
+  });
+
+  return ctx.getImageData(0, 0, sceneW, sceneH);
+}
+
+// ---------------------------------------------------------------------------
+// PSF convolution (low-res buffer + top-N taps)
+// Runs at CONV_W x CONV_H then upscales via drawImage - about 57x faster than full-res.
+// ---------------------------------------------------------------------------
+
+function convolveScene(img, psf, p, after) {
+  const out = new ImageData(CONV_W, CONV_H);
+  const src = img.data, dst = out.data;
+  const sxF = sceneW / CONV_W, syF = sceneH / CONV_H; // = 2, 2
+
+  // Collect sparse taps from PSF
+  let raw = [];
+  const scale = after
+    ? Math.max(0.45, 1.02 - 0.34 * p.nso - 0.10 * p.sa)
+    : 1.10 + p.glare * 0.9;
+  for (let y = 0; y < N; y += 5) {
+    for (let x = 0; x < N; x += 5) {
+      const val = psf[y * N + x];
+      if (val <= 0.000001) continue;
+      const sx = (x + N / 2) % N - N / 2;
+      const sy = (y + N / 2) % N - N / 2;
+      raw.push([Math.round(sx * scale / sxF), Math.round(sy * scale / syF), val]);
+    }
+  }
+
+  // Keep MAX_TAPS heaviest taps; pre-normalise into typed arrays
+  raw.sort((a, b) => b[2] - a[2]);
+  if (raw.length > MAX_TAPS) raw.length = MAX_TAPS;
+  let norm = 0;
+  for (const t of raw) norm += t[2];
+  const nT = raw.length;
+  const tdx = new Int32Array(nT), tdy = new Int32Array(nT), tw = new Float32Array(nT);
+  for (let i = 0; i < nT; i++) {
+    tdx[i] = raw[i][0]; tdy[i] = raw[i][1]; tw[i] = raw[i][2] / norm;
+  }
+
+  const contrast = after ? 0.96 + 0.18 * p.nso : 0.92 - 0.18 * p.glare;
+  for (let y = 0; y < CONV_H; y++) {
+    const fy = (y * syF) | 0;
+    for (let x = 0; x < CONV_W; x++) {
+      const fx = (x * sxF) | 0;
+      let r = 0, g = 0, b = 0;
+      for (let i = 0; i < nT; i++) {
+        const xx = fx - tdx[i], yy = fy - tdy[i];
+        if (xx < 0 || yy < 0 || xx >= sceneW || yy >= sceneH) continue;
+        const k = (yy * sceneW + xx) * 4, w = tw[i];
+        r += src[k] * w; g += src[k + 1] * w; b += src[k + 2] * w;
+      }
+      const o = (y * CONV_W + x) * 4;
+      dst[o]     = Math.min(255, r * contrast);
+      dst[o + 1] = Math.min(255, g * contrast);
+      dst[o + 2] = Math.min(255, b * contrast);
+      dst[o + 3] = 255;
+    }
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Glare overlay - halo/ghost rings (Before) and blue-noise scatter (After)
+// ---------------------------------------------------------------------------
+
+function overlayGlare(ctx, p, after) {
+  const residual = after
+    ? p.glare * (1 - p.nso * 0.88)
+    : p.glare * (1 + p.sph * 0.5 + p.coma * 0.3);
+
+  [[150, 230], [490, 230], [320, 190]].forEach(([x, y], lightIndex) => {
+    // halo rings
+    for (let i = 0; i < 10; i++) {
+      const rr = 25 + i * 13 * (after ? 0.65 : 1.05);
+      ctx.strokeStyle = `rgba(255,230,160,${Math.max(0, residual * (0.10 - i * 0.007))})`;
+      ctx.lineWidth = after ? 1.5 : 3.5;
+      ctx.beginPath();
+      ctx.ellipse(
+        x + (after ? 0 : Math.random() * 12 - 6),
+        y + (after ? 0 : Math.random() * 12 - 6),
+        rr, rr * (after ? 0.9 : 0.65 + Math.random() * 0.4),
+        Math.random() * Math.PI, 0, Math.PI * 2,
+      );
+      ctx.stroke();
+    }
+    // NSO after: blue-noise scatter dots
+    if (after) {
+      const fieldRadius = 35 + 125 * p.sa + 42 * p.nso;
+      const dots = Math.floor((70 + 310 * p.nso) * Math.max(0.20, p.glare));
+      const dotAlpha = 0.035 + 0.07 * p.nso + 0.035 * p.glare;
+      for (let i = 0; i < dots; i++) {
+        const seed = 97 * (lightIndex + 1) + i;
+        const a = hash01(seed) * Math.PI * 2;
+        const rad = Math.sqrt(hash01(seed + 0.37)) * fieldRadius;
+        const size = 0.8 + 1.2 * hash01(seed + 0.73) + 0.45 * p.nso;
+        ctx.fillStyle = `rgba(100,255,225,${dotAlpha * (0.55 + 0.55 * hash01(seed + 1.11))})`;
+        ctx.beginPath();
+        ctx.arc(x + Math.cos(a) * rad, y + Math.sin(a) * rad, size, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      const rays = 8;
+      for (let i = 0; i < rays; i++) {
+        const a = (i / rays) * Math.PI * 2 + lightIndex * 0.25;
+        const inner = 22 + 10 * p.nso;
+        const outer = fieldRadius * (0.74 + 0.18 * hash01(lightIndex * 41 + i));
+        ctx.strokeStyle = `rgba(0,229,199,${0.025 + 0.055 * p.nso * p.glare})`;
+        ctx.lineWidth = 1 + 1.2 * p.nso;
+        ctx.beginPath();
+        ctx.moveTo(x + Math.cos(a) * inner, y + Math.sin(a) * inner);
+        ctx.lineTo(x + Math.cos(a) * outer, y + Math.sin(a) * outer);
+        ctx.stroke();
+      }
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// PSF visualisation & quality metrics
+// ---------------------------------------------------------------------------
+
+function drawPSF(canvasId, psf) {
+  const ctx = document.getElementById(canvasId).getContext("2d");
+  const img = ctx.createImageData(220, 220);
+  let max = 0;
+  for (let i = 0; i < psf.length; i++) if (psf[i] > max) max = psf[i];
+  for (let y = 0; y < 220; y++) {
+    for (let x = 0; x < 220; x++) {
+      const px = Math.floor(x / 220 * N), py = Math.floor(y / 220 * N);
+      const v = Math.pow(psf[py * N + px] / max, 0.18) * 255; // gamma reveals PSF tail
+      const k = (y * 220 + x) * 4;
+      img.data[k] = v; img.data[k + 1] = v; img.data[k + 2] = v; img.data[k + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+// Centre-to-ring energy ratio - proxy for PSF compactness / MTF quality
+function metric(psf) {
+  const center = psf[(N / 2 | 0) * N + (N / 2 | 0)];
+  let ring = 0;
+  for (let y = 0; y < N; y++) {
+    for (let x = 0; x < N; x++) {
+      const dx = x - N / 2, dy = y - N / 2, r = Math.sqrt(dx * dx + dy * dy);
+      if (r > 6 && r < 28) ring += psf[y * N + x];
+    }
+  }
+  return { center, ring, score: center / (ring + 1e-9) };
+}
+
+// ---------------------------------------------------------------------------
+// Main render loop
+// ---------------------------------------------------------------------------
+
+// Off-screen canvas for scaling low-res convolution buffer to display size
+const _blitCanvas = document.createElement("canvas");
+_blitCanvas.width = CONV_W; _blitCanvas.height = CONV_H;
+const _blitCtx = _blitCanvas.getContext("2d");
+
+function blitScaled(destCtx, lowResImg) {
+  _blitCtx.putImageData(lowResImg, 0, 0);
+  destCtx.imageSmoothingEnabled = true;
+  destCtx.drawImage(_blitCanvas, 0, 0, sceneW, sceneH);
+}
+
+function renderAll() {
+  const p = params();
+  const scene = drawSceneToImageData();
+  const psfB  = makePSF(p, false), psfA = makePSF(p, true);
+  const imgB  = convolveScene(scene, psfB, p, false);
+  const imgA  = convolveScene(scene, psfA, p, true);
+
+  const bctx = document.getElementById("before").getContext("2d");
+  const actx = document.getElementById("after").getContext("2d");
+  blitScaled(bctx, imgB); blitScaled(actx, imgA);
+  overlayGlare(bctx, p, false); overlayGlare(actx, p, true);
+  drawPSF("psfBefore", psfB); drawPSF("psfAfter", psfA);
+
+  const mb = metric(psfB), ma = metric(psfA);
+  const clamp = (v) => Math.round(Math.max(0, Math.min(100, v)));
+  const mtf     = clamp(50 + 35 * Math.log10(ma.score / mb.score + 1));
+  const entropy = clamp(55 + p.nso * 34 - p.coma * 6 - p.sph * 5 + p.sa * 5);
+  const risk    = clamp(70 * p.coma + 65 * p.sph + 35 * p.glare + 7 * (p.pupil - 4) - 45 * p.nso);
+
+  document.getElementById("mtfScore").innerText = mtf     + " / 100";
+  document.getElementById("entropy").innerText  = entropy + " / 100";
+  document.getElementById("risk").innerText     = risk    + " / 100";
+}
+
+// ---------------------------------------------------------------------------
+// Boot
+// ---------------------------------------------------------------------------
+applyLang();
+renderAll();
+</script>
+</body>
+</html>

@@ -1,0 +1,17 @@
+# Render blueprint for the NSO FastAPI backend (src/backend).
+# In Render: New → Blueprint → point at this repo. Then set ALLOWED_ORIGINS
+# to your Vercel frontend URL in the service's Environment tab.
+services:
+  - type: web
+    name: nso-api
+    runtime: python
+    plan: free
+    rootDir: src/backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn api:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    envVars:
+      - key: ALLOWED_ORIGINS
+        sync: false   # set to https://your-frontend-domain in the dashboard
+      - key: PYTHON_VERSION
+        value: "3.11.9"
