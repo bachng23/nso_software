@@ -23,14 +23,14 @@ import report
 
 app = FastAPI(title="NSO AI-PC Fitting API", version="0.3")
 
-# CORS: always allow localhost (dev); in production set ALLOWED_ORIGINS to a
-# comma-separated list of exact frontend origins, e.g.
-#   ALLOWED_ORIGINS=https://nso.example.com
+# CORS: allow any *.vercel.app (production + preview deploys) and localhost.
+# For a custom domain later, add it via ALLOWED_ORIGINS (comma-separated).
 _prod_origins = [o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "").split(",") if o.strip()]
+_origin_regex = r"https://([a-z0-9-]+\.)*vercel\.app|http://(localhost|127\.0\.0\.1)(:\d+)?"
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_prod_origins,
-    allow_origin_regex=r"http://(localhost|127\.0\.0\.1)(:\d+)?",
+    allow_origin_regex=_origin_regex,
     allow_methods=["*"],
     allow_headers=["*"],
 )
