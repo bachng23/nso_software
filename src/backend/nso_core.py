@@ -690,9 +690,12 @@ def run_prediction(
 
     return {
         "profile": best["Profile"],
+        "sa_profile": best["SA"],
+        "temporal_multiplier": best["Temporal"],
         "sa_strength": round(sa, 2),
         "density": round(dens, 1),
         "expected_al_reduction_mm_per_year": expected_al_reduction_mm(ctrl_score),
+        "al_reduction_band": al_reduction_estimate(ctrl_score),
         "recommended_follow_up": follow_up,
         "control_score": round(ctrl_score, 1),
         "adaptation_score": round(adapt_score, 1),

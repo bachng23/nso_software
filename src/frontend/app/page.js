@@ -15,6 +15,31 @@ const RESULT_TIERS = {
   review: { bg: "#fef2f2", border: "#fca5a5", lbBg: "#fee2e2", lbBorder: "#ef4444", lbColor: "#991b1b", title: "#7f1d1d", body: "#991b1b", label: "REVIEW" },
 };
 
+const scoreLabel = (x) => (x >= 80 ? "Excellent" : x >= 65 ? "Good" : x >= 50 ? "Fair" : "Low");
+const robustLabel = (x) => (x >= 80 ? "Stable" : x >= 60 ? "Moderate" : "Variable");
+
+function ScoreCard({ cap, value, suffix, label }) {
+  return (
+    <div className="card" style={{ padding: "14px 16px" }}>
+      <div className="metric-cap" style={{ marginBottom: 8 }}>{cap}</div>
+      <div className="metric-big" style={{ fontSize: 28, lineHeight: 1 }}>{value}{suffix}</div>
+      <div className="metric-sub" style={{ marginTop: 6, minHeight: 15 }}>{label || ""}</div>
+    </div>
+  );
+}
+
+function FlowStep({ label, value, highlight }) {
+  return (
+    <div style={{ flex: "1 1 0", minWidth: 110, background: highlight ? "var(--bg-accent, #e6f1fb)" : "var(--track)",
+      border: highlight ? "1px solid #3398e1" : "1px solid var(--border)", borderRadius: 8, padding: "10px 12px" }}>
+      <div style={{ font: "600 10px Inter", letterSpacing: "0.06em", color: "var(--warm)", marginBottom: 4 }}>{label.toUpperCase()}</div>
+      <div style={{ font: "500 16px Inter", color: highlight ? "#185fa5" : "var(--ink)" }}>{value}</div>
+    </div>
+  );
+}
+
+const Arrow = () => <span style={{ color: "var(--ash)", fontSize: 18 }}>→</span>;
+
 function Crumbs({ step, go }) {
   const items = ["Patient input", "Prediction results", "Follow-up visit"];
   const active = step === 1 ? 0 : step === 2 ? 1 : 2;
@@ -143,8 +168,8 @@ export default function Page() {
       <div className="topbar">
         <div className="brand">
           <span className="brand-mark" />
-          <span className="brand-name">NSO AI-PC Fitting</span>
-          <span className="brand-ver">v0.3</span>
+          <span className="brand-name">NSO AI-PC Fitting Platform</span>
+          <span className="brand-ver">Research Prototype</span>
         </div>
         <div className="badge">
           <span className="badge-dot" />
@@ -174,8 +199,8 @@ function Screen1({ inp, set, adv, setAdv, loading, run, go }) {
   return (
     <div>
       <Crumbs step={1} go={go} />
-      <h1 className="title">Patient input</h1>
-      <p className="sub">Enter clinical measurements and lifestyle factors. The engine evaluates them with fixed deterministic formulas — no learned parameters.</p>
+      <h1 className="title">Clinical Decision Support</h1>
+      <p className="sub">Enter patient measurements and lifestyle factors to generate a personalized optical recommendation.</p>
 
       <div className="card lift" style={{ marginTop: 20 }}>
         <div className="cap" style={{ marginBottom: 16 }}>CLINICAL MEASUREMENTS</div>
@@ -189,31 +214,47 @@ function Screen1({ inp, set, adv, setAdv, loading, run, go }) {
         <div className="divider" style={{ margin: "24px 0" }} />
         <div className="cap" style={{ marginBottom: 18 }}>LIFESTYLE &amp; TOLERANCE</div>
         <div className="grid2" style={{ gap: "24px 32px" }}>
-          <Slider label="Near work" unit="h/day" min="0" max="14" step="0.5" value={inp.near} onChange={set("near")} />
-          <Slider label="Outdoor time" unit="h/day" min="0" max="8" step="0.5" value={inp.outdoor} onChange={set("outdoor")} />
-          <Slider label="Comfort tolerance" unit="/ 100" min="0" max="100" step="1" value={inp.comfort} onChange={set("comfort")} />
-          <Slider label="CSF quality" unit="/ 100" min="0" max="100" step="1" value={inp.csf} onChange={set("csf")} />
+          <Slider label="Near work" unit="h/day" min="0" max="14" step="0.5" value={inp.near} onChange={set("near")} hint="School + screen time" />
+          <Slider label="Outdoor activity" unit="h/day" min="0" max="8" step="0.5" value={inp.outdoor} onChange={set("outdoor")} hint="Target ≥ 2 h/day" />
+          <Slider label="Lens Adaptation" unit="/ 100" min="0" max="100" step="1" value={inp.comfort} onChange={set("comfort")} hint="Tolerance to the lens design" />
+          <Slider label="Contrast Sensitivity (CSF)" unit="/ 100" min="0" max="100" step="1" value={inp.csf} onChange={set("csf")} />
         </div>
 
         <div className="divider" style={{ margin: "24px 0 16px" }} />
         <button className="crumb" style={{ font: "500 12px Inter", color: "#78716c" }}
           onClick={() => setAdv({ ...adv, open: !adv.open })}>
-          {adv.open ? "▾" : "▸"} Advanced: lens design tuning (optional)
+          {adv.open ? "▾" : "▸"} Advanced: lens design parameters
         </button>
         {adv.open && (
-          <div className="grid2" style={{ marginTop: 14 }}>
-            <NumField label="SA strength override" unit="D · blank = profile default" step="0.5"
-              value={adv.sa} onChange={(e) => setAdv({ ...adv, sa: e.target.value })} />
-            <NumField label="Microstructure density" unit="0–100 · blank = default" step="1"
-              value={adv.density} onChange={(e) => setAdv({ ...adv, density: e.target.value })} />
+          <div style={{ marginTop: 14 }}>
+            <div className="grid2">
+              <NumField label="SA strength override" unit="D · blank = profile default" step="0.5"
+                value={adv.sa} onChange={(e) => setAdv({ ...adv, sa: e.target.value })} />
+              <NumField label="Microstructure density" unit="0–100 · blank = default" step="1"
+                value={adv.density} onChange={(e) => setAdv({ ...adv, density: e.target.value })} />
+            </div>
+            <div className="grid2" style={{ marginTop: 14 }}>
+              <div>
+                <ReadRow label="SA profile" value="Peripheral add, radial" />
+                <ReadRow label="Entropy target" value="Auto (from profile)" />
+                <ReadRow label="Temporal density" value="Profile-defined" />
+              </div>
+              <div>
+                <ReadRow label="Optical zone" value="3 zones" />
+                <ReadRow label="Lens type" value="NSO soft multifocal" />
+                <ReadRow label="Manufacturing profile" value="Standard" />
+              </div>
+            </div>
+            <span className="note" style={{ fontSize: 11, display: "block", marginTop: 8 }}>
+              Read-only design parameters shown for context; editable in the manufacturing module.
+            </span>
           </div>
         )}
 
         <div className="divider" style={{ margin: "20px 0" }} />
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16 }}>
-          <span className="note">Deterministic engine · no patient data leaves this screen.</span>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 16 }}>
           <button className="btn btn-primary" disabled={loading} onClick={run}>
-            {loading ? "Running…" : "Run prediction"}
+            {loading ? "Generating…" : "Generate Recommendation"}
           </button>
         </div>
       </div>
@@ -230,7 +271,7 @@ function NumField({ label, unit, step, value, onChange }) {
   );
 }
 
-function Slider({ label, unit, min, max, step, value, onChange }) {
+function Slider({ label, unit, min, max, step, value, onChange, hint }) {
   return (
     <div className="slider">
       <div className="slider-head">
@@ -238,6 +279,17 @@ function Slider({ label, unit, min, max, step, value, onChange }) {
         <span className="slider-val">{value} <span className="unit">{unit}</span></span>
       </div>
       <input type="range" min={min} max={max} step={step} value={value} onChange={onChange} />
+      {hint && <span className="note" style={{ fontSize: 11 }}>{hint}</span>}
+    </div>
+  );
+}
+
+function ReadRow({ label, value }) {
+  return (
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline",
+      padding: "7px 0", borderBottom: "1px solid var(--border)" }}>
+      <span style={{ font: "400 12px Inter", color: "var(--warm)" }}>{label}</span>
+      <span style={{ font: "500 12px Inter", color: "var(--ink)" }}>{value}</span>
     </div>
   );
 }
@@ -266,7 +318,6 @@ function Screen2({ pred, go, onFollowup, onExport }) {
 
   const contribs = pred.top_contributors;
   const maxAbs = Math.max(...contribs.map((c) => Math.abs(c.percent)), 1);
-  const gated = pred.need_more_data || pred.entropy_robustness_probability < 0.5;
 
   return (
     <div>
@@ -274,13 +325,24 @@ function Screen2({ pred, go, onFollowup, onExport }) {
       <h1 className="title" style={{ fontSize: 28, marginBottom: 2 }}>Prediction results</h1>
       <p className="sub" style={{ fontSize: 13, marginBottom: 14 }}>Deterministic output — probabilities are model estimates, not a clinically validated outcome.</p>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginBottom: 12 }}>
-        <Metric compact cap="RECOMMENDED PROFILE" big={pred.profile} sub="Myopia-control add power" />
-        <Metric compact cap="EXPECTED AL REDUCTION" big={`${pred.expected_al_reduction_mm_per_year.toFixed(2)} mm/yr`} sub="vs. untreated projection" />
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginBottom: 16 }}>
+        <Metric compact cap="RECOMMENDED PROFILE" big={`${pred.profile} control`}
+          sub={<>Myopia-control strength · SA {pred.sa_profile}<br />Temporal +{Math.round((pred.temporal_multiplier - 1) * 100)}%</>} />
+        <Metric compact cap="EXPECTED AL REDUCTION" big={pred.al_reduction_band}
+          sub={`~${pred.expected_al_reduction_mm_per_year.toFixed(2)} mm/yr vs. untreated`} />
         <Metric compact cap="RECOMMENDED FOLLOW-UP" big={pred.recommended_follow_up} sub="Next axial-length check" />
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1.5fr 1fr", gap: 12, marginBottom: 12 }}>
+      <div className="cap cap-sm" style={{ marginBottom: 10 }}>NSO PREDICTION</div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 12, marginBottom: 16 }}>
+        <ScoreCard cap="CONTROL SCORE" value={Math.round(pred.control_score)} label={scoreLabel(Math.round(pred.control_score))} />
+        <ScoreCard cap="ADAPTATION SCORE" value={Math.round(pred.adaptation_score)} label={scoreLabel(Math.round(pred.adaptation_score))} />
+        <ScoreCard cap="ROBUSTNESS" value={Math.round(pred.robustness)} label={robustLabel(Math.round(pred.robustness))} />
+        <ScoreCard cap="ENTROPY SCORE" value={Math.round(pred.entropy)} />
+        <ScoreCard cap="CONFIDENCE" value={Math.round(pred.prediction_confidence)} suffix="%" />
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1.5fr 1fr", gap: 12, marginBottom: 16 }}>
         <div className="card" style={{ padding: 20 }}>
           <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 14 }}>
             <div className="cap cap-sm">OUTCOME PROBABILITY MATRIX</div>
@@ -304,22 +366,18 @@ function Screen2({ pred, go, onFollowup, onExport }) {
 
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <div className="card" style={{ padding: 16 }}>
-            <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 10 }}>
-              <div className="cap cap-sm">ENTROPY / ROBUSTNESS</div>
-              <span className="metric-big" style={{ fontSize: 24 }}>{pct(pred.entropy_robustness_probability)}%</span>
-            </div>
-            <Bar pct={pct(pred.entropy_robustness_probability)} />
-            <div className="note">Design-quality gate, not a matrix axis. Weak robustness lowers confidence.</div>
+            <div className="cap cap-sm" style={{ marginBottom: 12 }}>RESPONDER PROBABILITY</div>
+            {["Good", "Moderate", "Poor"].map((k) => (
+              <div key={k} style={{ display: "grid", gridTemplateColumns: "68px 1fr 40px", alignItems: "center", gap: 10, marginBottom: 8 }}>
+                <span style={{ font: "400 12px Inter" }}>{k}</span>
+                <div className="bar-track" style={{ marginBottom: 0 }}>
+                  <div className="bar-fill" style={{ width: `${pct(pred.responder_probabilities[k])}%` }} />
+                </div>
+                <span style={{ font: "500 12px Inter", textAlign: "right" }}>{pct(pred.responder_probabilities[k])}%</span>
+              </div>
+            ))}
           </div>
-          <div className="card" style={{ padding: 16 }}>
-            <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 10 }}>
-              <div className="cap cap-sm">PREDICTION CONFIDENCE</div>
-              <span className="metric-big" style={{ fontSize: 24 }}>{Math.round(pred.prediction_confidence)}%</span>
-            </div>
-            <Bar pct={Math.round(pred.prediction_confidence)} />
-            <div className="note">{gated ? "Robustness-gated · distribution near-uniform." : "One case dominates — robustness supports this."}</div>
-          </div>
-          <div className="banner" style={{ background: t.bg, border: `1px solid ${t.border}`, padding: "12px 14px", flex: 1 }}>
+          <div className="banner" style={{ background: t.bg, border: `1px solid ${t.border}`, padding: "12px 14px" }}>
             <span className="banner-label" style={{ color: t.lbColor, background: t.lbBg, border: `1px solid ${t.lbBorder}` }}>{t.label}</span>
             <div>
               <div className="banner-title" style={{ color: t.title, fontSize: 13 }}>{bannerTitle}</div>
@@ -422,6 +480,22 @@ function Screen3({ fu, setFuVal, res, go, onDownload }) {
         <Metric cap="ANNUALIZED DELTA AL" big={res ? `${fmt(res.annualized_delta_al)} mm/yr` : "—"} sub="Progression rate, interval-normalized" />
       </div>
 
+      {res && (
+        <div className="card" style={{ padding: 16, marginBottom: 16 }}>
+          <div className="cap cap-sm" style={{ marginBottom: 12 }}>CLOSED-LOOP MANAGEMENT</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <FlowStep label="Baseline" value={`${num(fu.baseline).toFixed(2)} mm`} />
+            <Arrow />
+            <FlowStep label={`${fu.interval} months`} value={`${num(fu.followup).toFixed(2)} mm`} />
+            <Arrow />
+            <FlowStep label="Annualized" value={`${res.annualized_delta_al.toFixed(2)} mm/yr`} />
+            <Arrow />
+            <FlowStep label="Next NSO profile" value={`${res.next_profile} control`} highlight />
+          </div>
+          <div className="note" style={{ marginTop: 10 }}>NSO profile = myopia-control strength (Low → Medium → High).</div>
+        </div>
+      )}
+
       {res && tier && (
         <div className="banner" style={{ background: tier.bg, border: `1px solid ${tier.border}`, marginBottom: 16 }}>
           <span className="banner-label" style={{ color: tier.lbColor, background: tier.lbBg, border: `1px solid ${tier.lbBorder}` }}>{tier.key}</span>
@@ -432,15 +506,7 @@ function Screen3({ fu, setFuVal, res, go, onDownload }) {
         </div>
       )}
 
-      <div className="card" style={{ padding: "18px 20px", marginBottom: 20, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16 }}>
-        <div>
-          <div className="cap cap-sm" style={{ marginBottom: 4 }}>NEXT RECOMMENDED PROFILE</div>
-          <div className="note">Applied at the next dispense or adjustment</div>
-        </div>
-        <div className="metric-big" style={{ fontSize: 28 }}>{res ? res.next_profile : "—"}</div>
-      </div>
-
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, marginTop: 20 }}>
         <span className="note">Report appends this visit to the patient&apos;s progression record.</span>
         <button className="btn btn-primary" onClick={onDownload}>Download updated follow-up report ⤓</button>
       </div>
