@@ -1,7 +1,8 @@
 numpy>=1.24
 pandas>=2.0
-streamlit>=1.30
 fastapi>=0.110
 uvicorn[standard]>=0.27
 reportlab>=4.0
 pytest>=8.0
+# Postgres driver — only needed once NSO_DATABASE_URL points at Postgres.
+# psycopg[binary]>=3.1

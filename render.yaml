@@ -13,5 +13,26 @@ services:
     envVars:
       - key: ALLOWED_ORIGINS
         sync: false   # set to https://your-frontend-domain in the dashboard
+      # One key per vendor role for /api/manufacturing/*. A role with no key
+      # configured is disabled; with none configured at all the endpoints
+      # return 503. Never issue MANUFACTURING_KEY_INTERNAL to an outside party
+      # -- it opens every segment.
+      - key: MANUFACTURING_KEY_FRONT_SURFACE
+        sync: false
+      - key: MANUFACTURING_KEY_BACK_SURFACE
+        sync: false
+      - key: MANUFACTURING_KEY_ASSEMBLY
+        sync: false
       - key: PYTHON_VERSION
         value: "3.11.9"
+      # Design store. WITHOUT THIS the store is in-memory and every Design ID
+      # dies with the process: submit, vendor pull and refit all 404 after a
+      # restart. /api/health reports which backend is live.
+      #
+      # WARNING for Render's free tier: its filesystem is ephemeral, so a
+      # SQLite file does NOT survive a redeploy. Free tier needs an external
+      # Postgres; a paid Disk or a managed Postgres is the real answer.
+      #   sqlite:////var/data/nso.db        (needs a mounted Disk)
+      #   postgresql://user:pw@host/dbname  (intended production backend)
+      - key: NSO_DATABASE_URL
+        sync: false

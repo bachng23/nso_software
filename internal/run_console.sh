@@ -10,4 +10,4 @@ fi
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
-python -m streamlit run nso_mvp.py
+NSO_INTERNAL_CONSOLE=1 python -m streamlit run design_console.py

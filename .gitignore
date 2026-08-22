@@ -7,3 +7,6 @@ __pycache__/
 src/frontend/node_modules/
 src/frontend/.next/
 src/frontend/.env.local
+*.db
+*.db-shm
+*.db-wal

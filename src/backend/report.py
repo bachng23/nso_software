@@ -1,9 +1,11 @@
 """
 PDF report generation for the NSO AI-PC Fitting web UI.
 
-Produces a self-contained clinical report (patient info first, then results),
-built from the same engine output as the on-screen prediction. Rule-based —
-the report carries the "not clinically validated" disclaimer.
+Clinical-layer report: patient input, visual phenotype, AI-derived indices and
+predicted outcomes. It carries the Design ID, never the optical recipe — the
+printed report is as IP-safe as the API response, since a PDF leaves the clinic
+more easily than a browser session does. Rule-based, so the report also carries
+the "not clinically validated" disclaimer.
 """
 
 from datetime import date
@@ -107,72 +109,118 @@ _DISCLAIMER = (
 )
 
 
-_CASE_LABELS = {
-    "A": "High control / High adaptation",
-    "B": "High control / Low adaptation",
-    "C": "Low control / High adaptation",
-    "D": "Low control / Low adaptation",
+_SUPPORT_HINT = {
+    "Level 1": "baseline optical support",
+    "Level 2": "intermediate optical support",
+    "Level 3": "maximum optical support",
 }
 
 
+def _eye_row(inputs, key):
+    e = inputs.get(key) or {}
+    sph, cyl, axis = e.get("sphere", 0), e.get("cylinder", 0), e.get("axis", 0)
+    return f"{sph:+.2f} / {cyl:+.2f} x {axis:g}\u00b0 \u00b7 AL {e.get('axial_length', 0):g} mm"
+
+
+_INDEX_LABELS = [
+    ("refractive_risk", "Refractive Risk Index"),
+    ("binocular_load", "Binocular Load Index"),
+    ("accommodative_stress", "Accommodative Stress Index"),
+    ("spatial_frequency_sensitivity", "Spatial Frequency Sensitivity Index"),
+    ("visual_stress", "Visual Stress Index"),
+    ("neural_adaptation", "Neural Adaptation Index"),
+    ("dynamic_robustness", "Dynamic Robustness Index"),
+    ("interocular_image_balance", "Interocular Image-Balance Index"),
+]
+
+_PREDICTED_LABELS = [
+    ("myopia_control", "Predicted myopia control"),
+    ("visual_comfort", "Predicted visual comfort"),
+    ("adaptation", "Predicted adaptation"),
+    ("binocular_compatibility", "Predicted binocular compatibility"),
+    ("dynamic_robustness", "Predicted dynamic robustness"),
+]
+
+
 def build_report(inputs, r, followup=None):
-    """Single report. With ``followup`` it becomes the prediction report plus a
-    follow-up section appended at the end (used by the follow-up screen)."""
+    """Single clinical report. With ``followup`` the prediction report gains a
+    follow-up section at the end (used by the follow-up screen).
+
+    ``r`` is the clinical payload from ``nso_v2.clinical_only`` — by
+    construction it contains no design parameters, so there is nothing here to
+    redact.
+    """
     buf = BytesIO()
     doc = _doc(buf, "NSO AI-PC Fitting Report")
     s = []
-    subtitle = ("Initial fitting prediction, with a follow-up visit appended."
+    subtitle = ("Personalized optical design, with a follow-up visit appended."
                 if followup else
-                "Initial fitting prediction for the entered patient profile.")
+                "Personalized optical design for the entered clinical profile.")
     _header(s, "NSO AI-PC Fitting Report", subtitle)
 
-    s.append(Paragraph("PATIENT INPUT", _CAP))
+    s.append(Paragraph("CLINICAL INPUT", _CAP))
     s.append(_kv([
         ["Age", f"{inputs['age']:g} years"],
-        ["Axial length", f"{inputs['al']:g} mm"],
-        ["Spherical equivalent", f"{inputs['se']:g} D"],
-        ["Photopic pupil", f"{inputs['pupil']:g} mm"],
-        ["Near work", f"{inputs['near_hours']:g} h/day"],
+        ["Right eye (OD)", _eye_row(inputs, "od")],
+        ["Left eye (OS)", _eye_row(inputs, "os")],
+        ["Photopic pupil", f"{inputs['photopic_pupil']:g} mm"],
+        ["Near phoria", f"{inputs['near_phoria']:g} \u0394"],
+        ["NPC", f"{inputs['npc']:g} cm"],
+        ["Accommodative lag", f"{inputs['accommodative_lag']:g} D"],
+        ["Contrast sensitivity band", str(inputs["csf_band"])],
+        ["Visual stress", f"{inputs['visual_stress_score']:g} / 10"],
+        ["Near work / digital", f"{inputs['near_hours']:g} + {inputs['digital_hours']:g} h/day"],
         ["Outdoor time", f"{inputs['outdoor_hours']:g} h/day"],
-        ["Comfort tolerance", f"{inputs['comfort']:g} / 100"],
-        ["CSF quality", f"{inputs['csf']:g} / 100"],
+        ["Primary optimization goal", str(inputs["primary_goal"])],
     ]))
-    if inputs.get("sa_strength") is not None or inputs.get("density") is not None:
-        s.append(Paragraph(
-            f"Design tuning override — SA strength: {inputs.get('sa_strength', 'default')}, "
-            f"density: {inputs.get('density', 'default')}.", _SMALL))
 
-    s.append(Paragraph("RECOMMENDED FITTING", _CAP))
+    ph = r["phenotype"]
+    s.append(Paragraph("INDIVIDUAL VISUAL PHENOTYPE", _CAP))
+    s.append(Paragraph(f"Phenotype code: <b>{ph['code']}</b>", _BODY))
+    s.append(Spacer(1, 4))
+    s.append(_grid(
+        ["Domain", "Score", "Grade"],
+        [[d["name"], f"{d['score']:g}", d["grade_label"]] for d in ph["domains"]],
+        [98 * mm, 34 * mm, 36 * mm],
+    ))
+
+    s.append(Paragraph("AI-DERIVED VISUAL INDICES", _CAP))
+    s.append(_kv([[label, f"{r['indices'][key]:g} / 100"] for key, label in _INDEX_LABELS]))
+
+    s.append(Paragraph("RECOMMENDED PERSONALIZED OPTICAL DESIGN", _CAP))
     s.append(_kv([
-        ["Recommended profile", str(r["profile"])],
-        ["Expected AL reduction", f"{r['expected_al_reduction_mm_per_year']:.2f} mm/year"],
+        ["NSO personalized design", str(r["design_id"])],
+        ["Right eye (OD)", r["eyes"]["OD"]["profile_label"]],
+        ["Left eye (OS)", r["eyes"]["OS"]["profile_label"]],
+        ["Binocular pair optimization", str(r["binocular_pair"])],
+        ["Manufacturing status", str(r["manufacturing_status"])],
+    ]))
+    s.append(Paragraph(
+        "The optical design recipe is held server-side under the Design ID above and "
+        "is not reproduced in this report.", _SMALL))
+
+    s.append(Paragraph("PREDICTED PERFORMANCE", _CAP))
+    s.append(_kv([[label, f"{r['predicted'][key]}%"] for key, label in _PREDICTED_LABELS]))
+
+    s.append(Paragraph("SELECTION RATIONALE", _CAP))
+    s.append(Paragraph(
+        f"AI selected design: Candidate {r['selected_candidate']['OD']} (OD) / "
+        f"{r['selected_candidate']['OS']} (OS). {r['selection_rationale']}", _BODY))
+    s.append(Spacer(1, 5))
+    for line in r["explainable_summary"]:
+        s.append(Paragraph(f"\u2022 {line}", _BODY))
+
+    s.append(Paragraph("CONFIDENCE & FOLLOW-UP", _CAP))
+    s.append(_kv([
+        ["Prediction confidence", f"{r['prediction_confidence']}%"],
         ["Recommended follow-up", str(r["recommended_follow_up"])],
+        ["Measured optional domains",
+         ", ".join(k.replace("_", " ") for k, v in r["measured_domains"].items() if v) or "none"],
     ]))
-
-    case = r["recommended_case"]
-    s.append(Paragraph("PREDICTED OUTCOME", _CAP))
-    s.append(_kv([
-        ["Predicted case", f"Case {case} — {_CASE_LABELS[case]}"],
-        ["Case probability", f"{round(r['quadrant_probabilities'][case] * 100)}%"],
-        ["Control probability", f"{round(r['control_probability'] * 100)}%"],
-        ["Adaptation probability", f"{round(r['adaptation_probability'] * 100)}%"],
-    ]))
-
-    s.append(Paragraph("DESIGN QUALITY, CONFIDENCE & ACTION", _CAP))
-    s.append(_kv([
-        ["Entropy / robustness probability", f"{round(r['entropy_robustness_probability'] * 100)}%"],
-        ["Prediction confidence", f"{r['prediction_confidence']:.0f}%"],
-        ["Recommended action", str(r["recommended_action"])],
-    ]))
-
-    s.append(Paragraph("TOP CONTRIBUTORS", _CAP))
-    crows = [[c["factor"], ("+" if c["percent"] >= 0 else "−") + f"{abs(c['percent'])}%"]
-             for c in r["top_contributors"]]
-    s.append(_grid(["Factor", "Signed share"], crows, [120 * mm, 48 * mm]))
 
     if followup:
         ctx, fr = followup["ctx"], followup["result"]
-        sign = "+" if fr["delta_al"] >= 0 else "−"
+        sign = "+" if fr["delta_al"] >= 0 else "\u2212"
         s.append(PageBreak())
         s.append(Paragraph("FOLLOW-UP VISIT", _CAP))
         s.append(_kv([
@@ -181,8 +229,11 @@ def build_report(inputs, r, followup=None):
             ["Follow-up interval", f"{ctx['interval_months']:g} months"],
             ["Delta AL", f"{sign}{abs(fr['delta_al']):.3f} mm"],
             ["Annualized delta AL", f"{sign}{abs(fr['annualized_delta_al']):.3f} mm/year"],
-            ["Progression recommendation", str(fr["advice"])],
-            ["Next recommended profile", str(fr["next_profile"])],
+            ["Progression band", str(fr["progression_band"])],
+            ["Recommendation", str(fr["advice"])],
+            ["Next support level",
+             f"{fr['next_support_level']} \u2014 {_SUPPORT_HINT.get(fr['next_support_level'], '')}"],
+            ["Refit required", "Yes" if fr["refit_required"] else "No"],
         ]))
 
     s.append(Spacer(1, 10))

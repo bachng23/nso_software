@@ -1,0 +1,4 @@
+# Internal design console only. The deployed API does NOT need these --
+# src/backend/requirements.txt is what ships.
+-r ../src/backend/requirements.txt
+streamlit>=1.30

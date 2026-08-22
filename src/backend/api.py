@@ -1,12 +1,22 @@
 """
-FastAPI backend for the NSO AI-PC Fitting web UI (v0.3).
+FastAPI backend for the NSO AI-PC Fitting web UI (v2).
 
-It is a thin wrapper around the deterministic engine in ``nso_mvp.py`` — the
-web UI shows exactly the same rule-based results as the Streamlit app; only the
-presentation layer differs. No model is trained; this is "rule-based, ML-ready".
+IP layering (per the "UI complexity != algorithm complexity" architecture note):
+
+  * ``/api/predict`` accepts the six-section clinical profile and returns the
+    CLINICAL LAYER only — Design ID, visual phenotype, AI-derived indices and
+    predicted outcomes. The optical recipe (SA, microstructure geometry, fill
+    factor, spatial density, jitter, temporal asymmetry) is computed
+    server-side and never serialized into the response. Every response is
+    screened by ``nso_v2.assert_no_design_leak`` before it is returned.
+
+  * There is deliberately NO endpoint that returns a design recipe or a
+    manufacturing CSV to a browser. Manufacturing is a submit-only flow
+    (``/api/manufacturing/submit``); authorized vendors pull a single segment
+    of the projection from ``/api/manufacturing/package`` with an API key.
 
 Run (API only — the Next.js frontend calls it):
-    python -m pip install -r api_requirements.txt
+    python -m pip install -r requirements.txt
     python -m uvicorn api:app --reload --port 8000
 API docs at http://127.0.0.1:8000/docs
 """
@@ -14,14 +24,14 @@ API docs at http://127.0.0.1:8000/docs
 import os
 from typing import Optional
 
-from fastapi import FastAPI, Response
+from fastapi import FastAPI, Header, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-import nso_core as engine
+import nso as v2
 import report
 
-app = FastAPI(title="NSO AI-PC Fitting API", version="0.3")
+app = FastAPI(title="NSO AI-PC Fitting API", version="2.0")
 
 # CORS: allow any *.vercel.app (production + preview deploys) and localhost.
 # For a custom domain later, add it via ALLOWED_ORIGINS (comma-separated).
@@ -35,30 +45,143 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Per-vendor keys for the manufacturing segment API. One key per role, so a
+# single leaked credential cannot assemble the whole design -- a shared key
+# would defeat the point of segmenting the packages at all.
+#
+#   MANUFACTURING_KEY_FRONT_SURFACE=...   -> may pull FS
+#   MANUFACTURING_KEY_BACK_SURFACE=...    -> may pull BS
+#   MANUFACTURING_KEY_ASSEMBLY=...        -> may pull AV
+#   MANUFACTURING_KEY_INTERNAL=...        -> internal QA; all segments
+#
+# A role with no key configured is disabled, not open.
+def _vendor_keys() -> dict:
+    keys = {}
+    for role in v2.VENDOR_SEGMENTS:
+        value = os.environ.get(f"MANUFACTURING_KEY_{role.upper()}", "")
+        if value:
+            keys[value] = role
+    return keys
+
+
+VENDOR_KEYS = _vendor_keys()
+
+
+def _authorize_vendor(api_key: str, segment: str) -> str:
+    """Resolve a key to a vendor role and check it may pull this segment."""
+    if not VENDOR_KEYS:
+        raise HTTPException(status_code=503, detail="Manufacturing API not configured")
+    role = VENDOR_KEYS.get(api_key)
+    if role is None:
+        raise HTTPException(status_code=401, detail="Invalid manufacturing API key")
+    if segment not in v2.VENDOR_SEGMENTS[role]:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Vendor role '{role}' is not authorized for segment '{segment}'",
+        )
+    return role
+
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "version": "0.3", "engine": "rule-based"}
+    predictor = v2.get_predictor()
+    return {
+        "status": "ok",
+        "version": "2.0",
+        "engine": predictor.name,
+        "predictor_version": predictor.version,
+        "feature_schema": v2.FeatureVector.SCHEMA_VERSION,
+        "config_version": v2.get_config().version,
+        "design_store": v2.REGISTRY.backend,
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Request models — the six sections of the V2 clinical profile.
+#
+# Tier 1 (Quick Fitting) fields are required; Tier 2 (Advanced Clinical Data)
+# and Tier 3 (Research Mode) fields are all optional. NOTE: there is
+# intentionally no way for a client to supply design parameters — the old
+# ``sa_strength`` / ``density`` overrides were removed because they invert the
+# IP boundary.
+# --------------------------------------------------------------------------- #
+
+class EyeIn(BaseModel):
+    sphere: float = 0.0
+    cylinder: float = 0.0
+    axis: float = 0.0
+    axial_length: float = 24.0
+    bcva_logmar: Optional[float] = None
 
 
 class PredictIn(BaseModel):
+    # -- Tier 1: Quick Fitting ---------------------------------------------
     age: float
-    al: float
-    se: float  # spherical equivalent (myopia, negative)
-    pupil: float
-    near_hours: float
-    outdoor_hours: float
-    comfort: float
-    csf: float
-    sa_strength: Optional[float] = None  # advanced design tuning (optional)
-    density: Optional[float] = None
+    od: EyeIn
+    os: EyeIn
+    photopic_pupil: float = 4.5
+    near_phoria: float = 0.0
+    npc: float = 7.0
+    accommodative_lag: float = 0.75
+    csf_band: str = "Mid"
+    visual_stress_score: float = 3.0
+    near_hours: float = 6.0
+    digital_hours: float = 4.0
+    outdoor_hours: float = 1.5
+    primary_goal: str = "Myopia Management"
+
+    # -- Tier 2: Advanced Clinical Data ------------------------------------
+    mesopic_pupil: Optional[float] = None
+    distance_phoria: Optional[float] = None
+    pfv: Optional[float] = None
+    nfv: Optional[float] = None
+    ac_a: Optional[float] = None
+    stereoacuity: Optional[float] = None
+    ocular_dominance: str = "Balanced"
+    binocular_balance: str = "Normal"
+    amplitude_of_accommodation: Optional[float] = None
+    accommodative_facility: Optional[float] = None
+    near_working_distance: Optional[float] = None
+    computer_working_distance: Optional[float] = None
+    visual_comfort_score: Optional[float] = None
+    neural_adaptation_score: Optional[float] = None
+    dynamic_visual_stability: Optional[float] = None
+    typical_working_distance: Optional[float] = None
+    night_driving: bool = False
+    low_light_demand: str = "Moderate"
+
+    # -- Tier 3: Research Mode ---------------------------------------------
+    csf_low: Optional[float] = None
+    csf_mid: Optional[float] = None
+    csf_high: Optional[float] = None
+    vep: Optional[float] = None
+    erg: Optional[float] = None
+    eye_tracking: Optional[float] = None
+    hoa_rms: Optional[float] = None
+    corneal_sa: Optional[float] = None
+    coma: Optional[float] = None
+    trefoil: Optional[float] = None
+    corneal_astigmatism: Optional[float] = None
+    corneal_eccentricity: Optional[float] = None
+
+    def to_patient(self) -> v2.PatientInput:
+        # Subclasses (FollowupReportIn) carry extra non-clinical fields; keep
+        # only what PatientInput actually declares.
+        allowed = set(v2.PatientInput.__dataclass_fields__)
+        data = {k: v for k, v in self.model_dump().items() if k in allowed}
+        return v2.PatientInput(
+            od=v2.EyeInput(**self.od.model_dump()),
+            os=v2.EyeInput(**self.os.model_dump()),
+            **{k: v for k, v in data.items() if k not in ("od", "os")},
+        )
 
 
 class FollowupIn(BaseModel):
     baseline_al: float
     followup_al: float
     interval_months: int
-    current_profile: str = "Medium"
+    # Clinical support level, not the internal design tier.
+    current_support_level: str = "Level 2"
 
 
 class FollowupReportIn(PredictIn):
@@ -69,14 +192,130 @@ class FollowupReportIn(PredictIn):
     interval_months: int
 
 
-def _run_predict(inp: "PredictIn"):
-    return engine.run_prediction(
-        age=inp.age, al=inp.al, myopia=inp.se, pupil=inp.pupil,
-        near_hours=inp.near_hours, outdoor_hours=inp.outdoor_hours,
-        csf_score=inp.csf, comfort_score=inp.comfort,
-        sa_strength=inp.sa_strength, density=inp.density,
+class ManufacturingSubmitIn(BaseModel):
+    design_id: str
+    site: str = "SG"
+
+
+class ManufacturingPackageIn(BaseModel):
+    design_id: str
+    segment: str   # opaque segment code: FS / BS / AV
+    page: int = 0  # element-placement maps are paginated
+
+
+class VerificationIn(BaseModel):
+    """As-manufactured measurements submitted by the verification station."""
+    design_id: str
+    sag_error_mm: Optional[float] = None
+    element_height_error_mm: Optional[float] = None
+    element_position_error_mm: Optional[float] = None
+    decentration_mm: Optional[float] = None
+
+
+class RefitIn(PredictIn):
+    """Clinical profile plus the follow-up readings that trigger the refit."""
+    previous_design_id: str
+    baseline_al: float
+    followup_al: float
+    interval_months: int
+
+
+def _clinical(inp: PredictIn) -> dict:
+    """Run the fitting and return the screened clinical payload."""
+    result = v2.clinical_only(inp.to_patient())
+    return result
+
+
+@app.post("/api/predict")
+def predict(inp: PredictIn):
+    """Clinical layer only. The design recipe stays on the server."""
+    return _clinical(inp)
+
+
+@app.post("/api/followup")
+def followup(inp: FollowupIn):
+    return v2.clinical_followup(
+        inp.baseline_al, inp.followup_al, inp.interval_months, inp.current_support_level
     )
 
+
+# --------------------------------------------------------------------------- #
+# Manufacturing: submit-only from the clinic; segmented pull for vendors.
+# --------------------------------------------------------------------------- #
+
+@app.post("/api/manufacturing/submit")
+def manufacturing_submit(inp: ManufacturingSubmitIn):
+    """Submit a registered design to manufacturing. Returns a job handle.
+
+    Replaces the old "Download Manufacturing CSV": the clinic never holds the
+    manufacturing data, it only authorizes the job.
+    """
+    if not v2.REGISTRY.known(inp.design_id):
+        raise HTTPException(status_code=404, detail="Unknown design ID")
+    job = v2.REGISTRY.submit_to_manufacturing(inp.design_id, site=inp.site)
+    v2.assert_no_design_leak(job)
+    return job
+
+
+@app.post("/api/manufacturing/package")
+def manufacturing_package(
+    inp: ManufacturingPackageIn,
+    x_api_key: str = Header(default=""),
+):
+    """Release ONE segment of the manufacturing projection to one vendor.
+
+    Not reachable from the clinical frontend: it requires the shared vendor API
+    key, and each segment carries only the geometry its own process step
+    executes — never the full recipe or the patient phenotype behind it.
+    """
+    _authorize_vendor(x_api_key, inp.segment)
+    if not v2.REGISTRY.known(inp.design_id):
+        raise HTTPException(status_code=404, detail="Unknown design ID")
+    try:
+        return v2.REGISTRY.manufacturing_segments(
+            inp.design_id, inp.segment, page=inp.page
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/manufacturing/verify")
+def manufacturing_verify(inp: VerificationIn, x_api_key: str = Header(default="")):
+    """Geometric verification of an as-manufactured lens.
+
+    Checks that the machine cut the shape that was sent. It does NOT verify
+    optical performance -- the response says so explicitly. Same vendor key as
+    the segment API: verification happens on the manufacturing side, not in the
+    clinic.
+    """
+    _authorize_vendor(x_api_key, "AV")
+    if not v2.REGISTRY.known(inp.design_id):
+        raise HTTPException(status_code=404, detail="Unknown design ID")
+    measured = {
+        k: val for k, val in inp.model_dump().items()
+        if k != "design_id" and val is not None
+    }
+    return v2.geometric_verification(inp.design_id, measured)
+
+
+@app.post("/api/refit")
+def refit(inp: RefitIn):
+    """Closed loop: clinical feedback produces a new personalized design."""
+    try:
+        return v2.refit(
+            inp.to_patient(),
+            inp.previous_design_id,
+            inp.baseline_al,
+            inp.followup_al,
+            inp.interval_months,
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Unknown previous design ID")
+
+
+# --------------------------------------------------------------------------- #
+# PDF reports — clinical layer only, same rule as the API responses.
+# --------------------------------------------------------------------------- #
 
 def _pdf_response(pdf_bytes: bytes, filename: str) -> Response:
     return Response(
@@ -86,32 +325,20 @@ def _pdf_response(pdf_bytes: bytes, filename: str) -> Response:
     )
 
 
-@app.post("/api/predict")
-def predict(inp: PredictIn):
-    return _run_predict(inp)
-
-
-@app.post("/api/followup")
-def followup(inp: FollowupIn):
-    return engine.run_followup(
-        inp.baseline_al, inp.followup_al, inp.interval_months, inp.current_profile
-    )
-
-
 @app.post("/api/report/prediction")
 def report_prediction(inp: PredictIn):
-    result = _run_predict(inp)
+    result = _clinical(inp)
     pdf = report.build_report(inp.model_dump(), result)
     return _pdf_response(pdf, "nso-report.pdf")
 
 
 @app.post("/api/report/followup")
 def report_followup(inp: FollowupReportIn):
-    pred = _run_predict(inp)
-    fu = engine.run_followup(
-        inp.baseline_al, inp.followup_al, inp.interval_months, pred["profile"]
+    result = _clinical(inp)
+    fu = v2.clinical_followup(
+        inp.baseline_al, inp.followup_al, inp.interval_months
     )
-    followup = {
+    followup_block = {
         "ctx": {
             "baseline_al": inp.baseline_al,
             "followup_al": inp.followup_al,
@@ -119,5 +346,5 @@ def report_followup(inp: FollowupReportIn):
         },
         "result": fu,
     }
-    pdf = report.build_report(inp.model_dump(), pred, followup=followup)
+    pdf = report.build_report(inp.model_dump(), result, followup=followup_block)
     return _pdf_response(pdf, "nso-report.pdf")

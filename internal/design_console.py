@@ -1,18 +1,38 @@
 """
-NSO AI-PC Fitting MVP v0.3 — Rule-based Probabilistic Responder Engine
-=====================================================================
+NSO internal design console — ENGINEERING USE ONLY.
 
-Fitting demo for the NSO lens concept based on clinical inputs and a simplified
-loss function.
+NOT the clinician-facing product. This app displays the complete design recipe:
+SA profile, microstructure density, temporal asymmetry, manufacturing export.
+That is the Design IP the entire server-side architecture exists to keep off the
+network (see ``src/backend/nso/__init__.py`` for the layer map).
+
+It lives outside ``src/backend`` on purpose. The deploy root is that directory,
+so nothing here can be packaged and shipped by accident -- labelling a file
+"internal" does not stop a deploy, moving it out of the build does. A second
+guard below refuses to start without ``NSO_INTERNAL_CONSOLE=1``.
+
+Run on a trusted machine only:
+
+    pip install -r internal/requirements.txt
+    NSO_INTERNAL_CONSOLE=1 streamlit run internal/design_console.py
 
 Pipeline:
     Clinical input -> baseline risk -> profile loss -> best NSO profile
                    -> manufacturing export -> AL follow-up -> strength adjustment
-
-Run:
-    python -m pip install -r requirements.txt
-    python -m streamlit run nso_mvp.py
 """
+
+import os
+import sys
+from pathlib import Path
+
+# The engine lives in the deploy root; this console is a consumer of it.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src" / "backend"))
+
+if os.environ.get("NSO_INTERNAL_CONSOLE") != "1":
+    raise SystemExit(
+        "Refusing to start: this console exposes the full design recipe.\n"
+        "Set NSO_INTERNAL_CONSOLE=1 only on a trusted machine."
+    )
 
 import numpy as np
 import pandas as pd

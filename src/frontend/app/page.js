@@ -8,6 +8,7 @@ const num = (v) => {
   const n = Number(v);
   return Number.isNaN(n) ? 0 : n;
 };
+const orNull = (v) => (v === "" || v === undefined || v === null ? null : num(v));
 
 const RESULT_TIERS = {
   ready: { bg: "#ecfdf5", border: "#86efac", lbBg: "#dcfce7", lbBorder: "#22c55e", lbColor: "#166534", title: "#14532d", body: "#166534", label: "READY" },
@@ -15,81 +16,134 @@ const RESULT_TIERS = {
   review: { bg: "#fef2f2", border: "#fca5a5", lbBg: "#fee2e2", lbBorder: "#ef4444", lbColor: "#991b1b", title: "#7f1d1d", body: "#991b1b", label: "REVIEW" },
 };
 
+const PRIMARY_GOALS = [
+  "Myopia Management", "Digital Visual Comfort", "Reading", "Near Work",
+  "Presbyopia", "Driving", "Night Vision", "Sports Vision", "General Visual Comfort",
+];
+
+const INDEX_LABELS = [
+  ["refractive_risk", "Refractive Risk"],
+  ["binocular_load", "Binocular Load"],
+  ["accommodative_stress", "Accommodative Stress"],
+  ["spatial_frequency_sensitivity", "Spatial Freq. Sensitivity"],
+  ["visual_stress", "Visual Stress"],
+  ["neural_adaptation", "Neural Adaptation"],
+  ["dynamic_robustness", "Dynamic Robustness"],
+  ["interocular_image_balance", "Interocular Image Balance"],
+];
+
+const PREDICTED_LABELS = [
+  ["myopia_control", "MYOPIA CONTROL"],
+  ["visual_comfort", "VISUAL COMFORT"],
+  ["adaptation", "ADAPTATION"],
+  ["binocular_compatibility", "BINOCULAR COMPAT."],
+  ["dynamic_robustness", "DYNAMIC ROBUSTNESS"],
+];
+
+// Kept next to the marked fields so the two cannot drift apart.
+const PENDING_HINT =
+  "Recorded, and the engine has a path for it, but its coefficient is set to " +
+  "zero pending clinical sign-off — so it does not change this design yet.";
+
 const scoreLabel = (x) => (x >= 80 ? "Excellent" : x >= 65 ? "Good" : x >= 50 ? "Fair" : "Low");
-const robustLabel = (x) => (x >= 80 ? "Stable" : x >= 60 ? "Moderate" : "Variable");
 
-function ScoreCard({ cap, value, suffix, label }) {
-  return (
-    <div className="card" style={{ padding: "14px 16px" }}>
-      <div className="metric-cap" style={{ marginBottom: 8 }}>{cap}</div>
-      <div className="metric-big" style={{ fontSize: 28, lineHeight: 1 }}>{value}{suffix}</div>
-      <div className="metric-sub" style={{ marginTop: 6, minHeight: 15 }}>{label || ""}</div>
-    </div>
-  );
-}
+// --------------------------------------------------------------------------
+// Default clinical profile (Tier 1 values are the ones the form starts with).
+// --------------------------------------------------------------------------
 
-function FlowStep({ label, value, highlight }) {
-  return (
-    <div style={{ flex: "1 1 0", minWidth: 110, background: highlight ? "var(--bg-accent, #e6f1fb)" : "var(--track)",
-      border: highlight ? "1px solid #3398e1" : "1px solid var(--border)", borderRadius: 8, padding: "10px 12px" }}>
-      <div style={{ font: "600 10px Inter", letterSpacing: "0.06em", color: "var(--warm)", marginBottom: 4 }}>{label.toUpperCase()}</div>
-      <div style={{ font: "500 16px Inter", color: highlight ? "#185fa5" : "var(--ink)" }}>{value}</div>
-    </div>
-  );
-}
+const DEFAULTS = {
+  age: 11,
+  odSphere: -3.25, odCyl: -0.5, odAxis: 180, odAl: 25.1,
+  osSphere: -3.0, osCyl: -0.25, osAxis: 175, osAl: 24.9,
+  photopic_pupil: 5.2,
+  near_phoria: -4, npc: 9, accommodative_lag: 1.1,
+  csf_band: "Mid", visual_stress_score: 6,
+  near_hours: 7, digital_hours: 5, outdoor_hours: 0.8,
+  primary_goal: "Myopia Management",
+};
 
-const Arrow = () => <span style={{ color: "var(--ash)", fontSize: 18 }}>→</span>;
+const ADV_DEFAULTS = {
+  odBcva: "", osBcva: "", mesopic_pupil: "",
+  distance_phoria: "", pfv: "", nfv: "", ac_a: "", stereoacuity: "", ocular_dominance: "Balanced",
+  binocular_balance: "Normal",
+  amplitude_of_accommodation: "", accommodative_facility: "",
+  near_working_distance: "", computer_working_distance: "",
+  visual_comfort_score: "", neural_adaptation_score: "", dynamic_visual_stability: "",
+  typical_working_distance: "", night_driving: false, low_light_demand: "Moderate",
+};
 
-function Crumbs({ step, go }) {
-  const items = ["Patient input", "Prediction results", "Follow-up visit"];
-  const active = step === 1 ? 0 : step === 2 ? 1 : 2;
-  return (
-    <div className="crumbs">
-      {items.map((label, i) => (
-        <span key={label} style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          {i > 0 && <span className="crumb-sep">→</span>}
-          {i === active ? (
-            <span className="crumb active">{label}</span>
-          ) : (
-            <button className="crumb" onClick={() => go(i)}>{label}</button>
-          )}
-        </span>
-      ))}
-    </div>
-  );
-}
-
-function Bar({ pct }) {
-  return (
-    <div className="bar-track" style={{ marginBottom: 12 }}>
-      <div className="bar-fill" style={{ width: `${pct}%` }} />
-    </div>
-  );
-}
+const RESEARCH_DEFAULTS = {
+  csf_low: "", csf_mid: "", csf_high: "",
+  vep: "", erg: "", eye_tracking: "",
+  hoa_rms: "", corneal_sa: "", coma: "", trefoil: "",
+  corneal_astigmatism: "", corneal_eccentricity: "",
+};
 
 export default function Page() {
   const [step, setStep] = useState(1);
-  const [inp, setInp] = useState({ age: 10, al: 24.6, se: -3.25, pupil: 5.2, near: 6, outdoor: 1.5, comfort: 65, csf: 72 });
-  const [adv, setAdv] = useState({ open: false, sa: "", density: "" });
+  const [inp, setInp] = useState(DEFAULTS);
+  const [advOpen, setAdvOpen] = useState(false);
+  const [resOpen, setResOpen] = useState(false);
+  const [adv, setAdv] = useState(ADV_DEFAULTS);
+  const [res, setRes] = useState(RESEARCH_DEFAULTS);
   const [pred, setPred] = useState(null);
+  const [job, setJob] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState(null);
-  const [fu, setFu] = useState({ baseline: 24.6, followup: 24.66, interval: 6 });
+  const [fu, setFu] = useState({ baseline: 25.1, followup: 25.16, interval: 6 });
   const [fuRes, setFuRes] = useState(null);
 
   const set = (k) => (e) => setInp({ ...inp, [k]: e.target.value });
+  const setA = (k) => (e) => setAdv({ ...adv, [k]: e.target.value });
+  const setR = (k) => (e) => setRes({ ...res, [k]: e.target.value });
 
   function predictBody() {
-    const body = {
-      age: num(inp.age), al: num(inp.al), se: num(inp.se), pupil: num(inp.pupil),
-      near_hours: num(inp.near), outdoor_hours: num(inp.outdoor),
-      comfort: num(inp.comfort), csf: num(inp.csf),
+    return {
+      age: num(inp.age),
+      od: {
+        sphere: num(inp.odSphere), cylinder: num(inp.odCyl), axis: num(inp.odAxis),
+        axial_length: num(inp.odAl), bcva_logmar: orNull(adv.odBcva),
+      },
+      os: {
+        sphere: num(inp.osSphere), cylinder: num(inp.osCyl), axis: num(inp.osAxis),
+        axial_length: num(inp.osAl), bcva_logmar: orNull(adv.osBcva),
+      },
+      photopic_pupil: num(inp.photopic_pupil),
+      near_phoria: num(inp.near_phoria),
+      npc: num(inp.npc),
+      accommodative_lag: num(inp.accommodative_lag),
+      csf_band: inp.csf_band,
+      visual_stress_score: num(inp.visual_stress_score),
+      near_hours: num(inp.near_hours),
+      digital_hours: num(inp.digital_hours),
+      outdoor_hours: num(inp.outdoor_hours),
+      primary_goal: inp.primary_goal,
+
+      mesopic_pupil: orNull(adv.mesopic_pupil),
+      distance_phoria: orNull(adv.distance_phoria),
+      pfv: orNull(adv.pfv), nfv: orNull(adv.nfv), ac_a: orNull(adv.ac_a),
+      stereoacuity: orNull(adv.stereoacuity),
+      ocular_dominance: adv.ocular_dominance,
+      binocular_balance: adv.binocular_balance,
+      amplitude_of_accommodation: orNull(adv.amplitude_of_accommodation),
+      accommodative_facility: orNull(adv.accommodative_facility),
+      near_working_distance: orNull(adv.near_working_distance),
+      computer_working_distance: orNull(adv.computer_working_distance),
+      visual_comfort_score: orNull(adv.visual_comfort_score),
+      neural_adaptation_score: orNull(adv.neural_adaptation_score),
+      dynamic_visual_stability: orNull(adv.dynamic_visual_stability),
+      typical_working_distance: orNull(adv.typical_working_distance),
+      night_driving: !!adv.night_driving,
+      low_light_demand: adv.low_light_demand,
+
+      csf_low: orNull(res.csf_low), csf_mid: orNull(res.csf_mid), csf_high: orNull(res.csf_high),
+      vep: orNull(res.vep), erg: orNull(res.erg), eye_tracking: orNull(res.eye_tracking),
+      hoa_rms: orNull(res.hoa_rms), corneal_sa: orNull(res.corneal_sa),
+      coma: orNull(res.coma), trefoil: orNull(res.trefoil),
+      corneal_astigmatism: orNull(res.corneal_astigmatism),
+      corneal_eccentricity: orNull(res.corneal_eccentricity),
     };
-    if (adv.open) {
-      if (adv.sa !== "") body.sa_strength = num(adv.sa);
-      if (adv.density !== "") body.density = num(adv.density);
-    }
-    return body;
   }
 
   async function downloadPdf(path, body, filename) {
@@ -122,9 +176,11 @@ export default function Page() {
   async function runPredict() {
     setLoading(true);
     setErr(null);
+    setJob(null);
     try {
       const r = await fetch(`${API}/api/predict`, {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(predictBody()),
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(predictBody()),
       });
       if (!r.ok) throw new Error(`API error ${r.status}`);
       setPred(await r.json());
@@ -137,6 +193,51 @@ export default function Page() {
     }
   }
 
+  async function submitToManufacturing() {
+    if (!pred) return;
+    setSubmitting(true);
+    setErr(null);
+    try {
+      const r = await fetch(`${API}/api/manufacturing/submit`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ design_id: pred.design_id }),
+      });
+      if (!r.ok) throw new Error(`API error ${r.status}`);
+      setJob(await r.json());
+    } catch (e) {
+      setErr(`Manufacturing submission failed: ${e}.`);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function runRefit() {
+    if (!pred) return;
+    setSubmitting(true);
+    setErr(null);
+    try {
+      const r = await fetch(`${API}/api/refit`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...predictBody(),
+          previous_design_id: pred.design_id,
+          baseline_al: num(fu.baseline),
+          followup_al: num(fu.followup),
+          interval_months: Math.round(num(fu.interval)),
+        }),
+      });
+      if (!r.ok) throw new Error(`API error ${r.status}`);
+      setPred(await r.json());
+      setJob(null);
+      setStep(2);
+      window.scrollTo(0, 0);
+    } catch (e) {
+      setErr(`Re-fit failed: ${e}.`);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   async function runFollowup(next) {
     const s = next || fu;
     try {
@@ -144,7 +245,8 @@ export default function Page() {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           baseline_al: num(s.baseline), followup_al: num(s.followup),
-          interval_months: Math.round(num(s.interval)), current_profile: pred ? pred.profile : "Medium",
+          interval_months: Math.round(num(s.interval)),
+          current_support_level: "Level 2",
         }),
       });
       if (r.ok) setFuRes(await r.json());
@@ -169,7 +271,7 @@ export default function Page() {
         <div className="brand">
           <span className="brand-mark" />
           <span className="brand-name">NSO AI-PC Fitting Platform</span>
-          <span className="brand-ver">Research Prototype</span>
+          <span className="brand-ver">V2 · Research Prototype</span>
         </div>
         <div className="badge">
           <span className="badge-dot" />
@@ -180,81 +282,195 @@ export default function Page() {
       {err && <div className="err">{err}</div>}
 
       {step === 1 && (
-        <Screen1 inp={inp} set={set} adv={adv} setAdv={setAdv} loading={loading}
-          run={runPredict} go={(i) => (i === 2 ? goFollowup() : i === 1 && pred && setStep(2))} />
+        <Screen1
+          inp={inp} set={set} setInp={setInp}
+          adv={adv} setA={setA} setAdv={setAdv} advOpen={advOpen} setAdvOpen={setAdvOpen}
+          res={res} setR={setR} resOpen={resOpen} setResOpen={setResOpen}
+          loading={loading} run={runPredict}
+          go={(i) => (i === 2 ? goFollowup() : i === 1 && pred && setStep(2))} />
       )}
       {step === 2 && pred && (
-        <Screen2 pred={pred} go={(i) => (i === 0 ? setStep(1) : i === 2 ? goFollowup() : null)}
+        <Screen2 pred={pred} job={job} submitting={submitting}
+          onSubmit={submitToManufacturing}
+          go={(i) => (i === 0 ? setStep(1) : i === 2 ? goFollowup() : null)}
           onFollowup={goFollowup} onExport={exportPrediction} />
       )}
       {step === 3 && (
         <Screen3 fu={fu} setFuVal={setFuVal} res={fuRes} onDownload={downloadFollowupReport}
+          onRefit={runRefit} canRefit={!!pred} refitting={submitting}
           go={(i) => (i === 0 ? setStep(1) : i === 1 ? setStep(2) : null)} />
       )}
     </div>
   );
 }
 
-function Screen1({ inp, set, adv, setAdv, loading, run, go }) {
+// --------------------------------------------------------------------------
+// Screen 1 — three tiers.
+//
+// Tier 1 (Quick Fitting) is the default view and stays at ~13 inputs. Tiers 2
+// and 3 are collapsed; nothing in any tier is a design parameter, because the
+// design engine is not steerable from the client.
+// --------------------------------------------------------------------------
+
+function Crumbs({ step, go }) {
+  const items = ["Clinical input", "Personalized design", "Follow-up visit"];
+  const active = step - 1;
+  return (
+    <div className="crumbs">
+      {items.map((label, i) => (
+        <span key={label} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          {i > 0 && <span className="crumb-sep">→</span>}
+          {i === active ? <span className="crumb active">{label}</span>
+            : <button className="crumb" onClick={() => go(i)}>{label}</button>}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function Screen1({ inp, set, setInp, adv, setA, setAdv, advOpen, setAdvOpen,
+  res, setR, resOpen, setResOpen, loading, run, go }) {
   return (
     <div>
       <Crumbs step={1} go={go} />
       <h1 className="title">Clinical Decision Support</h1>
-      <p className="sub">Enter patient measurements and lifestyle factors to generate a personalized optical recommendation.</p>
+      <p className="sub">
+        Quick Fitting needs the core clinical profile only. Extended measurements are
+        optional — they raise prediction confidence but are not required.
+      </p>
 
       <div className="card lift" style={{ marginTop: 20 }}>
-        <div className="cap" style={{ marginBottom: 16 }}>CLINICAL MEASUREMENTS</div>
+        <TierHead n="1" title="QUICK FITTING" note="Default — everything the engine needs" />
+
+        <div className="cap cap-sm" style={{ margin: "18px 0 12px" }}>PATIENT &amp; REFRACTION</div>
         <div className="grid2">
           <NumField label="Age" unit="years" step="1" value={inp.age} onChange={set("age")} />
-          <NumField label="Axial length" unit="mm" step="0.01" value={inp.al} onChange={set("al")} />
-          <NumField label="Spherical equivalent" unit="D" step="0.25" value={inp.se} onChange={set("se")} />
-          <NumField label="Photopic pupil" unit="mm" step="0.1" value={inp.pupil} onChange={set("pupil")} />
+          <NumField label="Photopic pupil" unit="mm" step="0.1" value={inp.photopic_pupil} onChange={set("photopic_pupil")} />
         </div>
 
-        <div className="divider" style={{ margin: "24px 0" }} />
-        <div className="cap" style={{ marginBottom: 18 }}>LIFESTYLE &amp; TOLERANCE</div>
+        <div className="eye-grid" style={{ marginTop: 14 }}>
+          <EyeBlock eye="OD — Right eye" prefix="od" inp={inp} set={set} />
+          <EyeBlock eye="OS — Left eye" prefix="os" inp={inp} set={set} />
+        </div>
+
+        <div className="divider" style={{ margin: "22px 0" }} />
+        <div className="cap cap-sm" style={{ marginBottom: 12 }}>BINOCULAR &amp; ACCOMMODATION</div>
+        <div className="grid2">
+          <NumField label="Near phoria" unit="Δ · exo negative" step="0.5" value={inp.near_phoria} onChange={set("near_phoria")} />
+          <NumField label="NPC" unit="cm" step="0.5" value={inp.npc} onChange={set("npc")} />
+          <NumField label="Accommodative lag" unit="D" step="0.05" value={inp.accommodative_lag} onChange={set("accommodative_lag")} />
+          <SelectField label="Contrast sensitivity (CSF)" unit="band" value={inp.csf_band}
+            onChange={set("csf_band")} options={["Low", "Mid", "High"]} />
+        </div>
+
+        <div className="divider" style={{ margin: "22px 0" }} />
+        <div className="cap cap-sm" style={{ marginBottom: 18 }}>VISUAL TASK &amp; ENVIRONMENT</div>
         <div className="grid2" style={{ gap: "24px 32px" }}>
-          <Slider label="Near work" unit="h/day" min="0" max="14" step="0.5" value={inp.near} onChange={set("near")} hint="School + screen time" />
-          <Slider label="Outdoor activity" unit="h/day" min="0" max="8" step="0.5" value={inp.outdoor} onChange={set("outdoor")} hint="Target ≥ 2 h/day" />
-          <Slider label="Lens Adaptation" unit="/ 100" min="0" max="100" step="1" value={inp.comfort} onChange={set("comfort")} hint="Tolerance to the lens design" />
-          <Slider label="Contrast Sensitivity (CSF)" unit="/ 100" min="0" max="100" step="1" value={inp.csf} onChange={set("csf")} />
+          <Slider label="Visual stress" unit="/ 10" min="0" max="10" step="1"
+            value={inp.visual_stress_score} onChange={set("visual_stress_score")} hint="Patient-reported symptom load" />
+          <Slider label="Near work" unit="h/day" min="0" max="14" step="0.5"
+            value={inp.near_hours} onChange={set("near_hours")} hint="School + close work" />
+          <Slider label="Digital device" unit="h/day" min="0" max="14" step="0.5"
+            value={inp.digital_hours} onChange={set("digital_hours")} />
+          <Slider label="Outdoor activity" unit="h/day" min="0" max="8" step="0.5"
+            value={inp.outdoor_hours} onChange={set("outdoor_hours")} hint="Target ≥ 2 h/day" />
+        </div>
+        <div style={{ marginTop: 20, maxWidth: "50%" }}>
+          <SelectField label="Primary visual goal" unit="optimization target"
+            value={inp.primary_goal} onChange={set("primary_goal")} options={PRIMARY_GOALS} />
         </div>
 
         <div className="divider" style={{ margin: "24px 0 16px" }} />
-        <button className="crumb" style={{ font: "500 12px Inter", color: "#78716c" }}
-          onClick={() => setAdv({ ...adv, open: !adv.open })}>
-          {adv.open ? "▾" : "▸"} Advanced: lens design parameters
-        </button>
-        {adv.open && (
-          <div style={{ marginTop: 14 }}>
-            <div className="grid2">
-              <NumField label="SA strength override" unit="D · blank = profile default" step="0.5"
-                value={adv.sa} onChange={(e) => setAdv({ ...adv, sa: e.target.value })} />
-              <NumField label="Microstructure density" unit="0–100 · blank = default" step="1"
-                value={adv.density} onChange={(e) => setAdv({ ...adv, density: e.target.value })} />
-            </div>
-            <div className="grid2" style={{ marginTop: 14 }}>
-              <div>
-                <ReadRow label="SA profile" value="Peripheral add, radial" />
-                <ReadRow label="Entropy target" value="Auto (from profile)" />
-                <ReadRow label="Temporal density" value="Profile-defined" />
-              </div>
-              <div>
-                <ReadRow label="Optical zone" value="3 zones" />
-                <ReadRow label="Lens type" value="NSO soft multifocal" />
-                <ReadRow label="Manufacturing profile" value="Standard" />
-              </div>
-            </div>
-            <span className="note" style={{ fontSize: 11, display: "block", marginTop: 8 }}>
-              Read-only design parameters shown for context; editable in the manufacturing module.
-            </span>
+
+        <Disclosure open={advOpen} toggle={() => setAdvOpen(!advOpen)}
+          label="Tier 2 · Advanced Clinical Data"
+          note="Full binocular, accommodative and neurovisual workup">
+          <div className="cap cap-sm" style={{ margin: "6px 0 12px" }}>BINOCULAR VISION</div>
+          <div className="grid2">
+            <NumField label="Distance phoria" unit="Δ · optional" step="0.5"
+              value={adv.distance_phoria} onChange={setA("distance_phoria")} />
+            <NumField label="Stereoacuity" unit="arc sec · optional" step="5" value={adv.stereoacuity} onChange={setA("stereoacuity")} />
+            <NumField label="PFV" unit="Δ · optional" step="1" value={adv.pfv} onChange={setA("pfv")} />
+            <NumField label="NFV" unit="Δ · optional" step="1" value={adv.nfv} onChange={setA("nfv")} />
+            <NumField label="AC/A ratio" unit="Δ/D · optional" step="0.5" value={adv.ac_a} onChange={setA("ac_a")} />
+            <SelectField label="Ocular dominance" unit="" pending value={adv.ocular_dominance}
+              onChange={setA("ocular_dominance")} options={["Balanced", "OD", "OS"]} />
+            <SelectField label="Binocular balance" unit="" value={adv.binocular_balance}
+              onChange={setA("binocular_balance")} options={["Normal", "Mild", "Significant"]} />
+            <NumField label="BCVA OD" unit="logMAR · optional" step="0.05" value={adv.odBcva} onChange={setA("odBcva")} />
+            <NumField label="BCVA OS" unit="logMAR · optional" step="0.05" value={adv.osBcva} onChange={setA("osBcva")} />
           </div>
-        )}
+
+          <div className="cap cap-sm" style={{ margin: "20px 0 12px" }}>ACCOMMODATION</div>
+          <div className="grid2">
+            <NumField label="Amplitude of accommodation" unit="D · optional" step="0.5"
+              value={adv.amplitude_of_accommodation} onChange={setA("amplitude_of_accommodation")} />
+            <NumField label="Accommodative facility" unit="cpm · optional" step="1"
+              value={adv.accommodative_facility} onChange={setA("accommodative_facility")} />
+            <NumField label="Near working distance" unit="cm · optional" step="1"
+              value={adv.near_working_distance} onChange={setA("near_working_distance")} />
+            <NumField label="Computer working distance" unit="cm · optional" step="1"
+              value={adv.computer_working_distance} onChange={setA("computer_working_distance")} />
+          </div>
+
+          <div className="cap cap-sm" style={{ margin: "20px 0 12px" }}>NEUROVISUAL &amp; ENVIRONMENT</div>
+          <div className="grid2">
+            <NumField label="Visual comfort score" unit="0–10 · optional" step="1"
+              value={adv.visual_comfort_score} onChange={setA("visual_comfort_score")} />
+            <NumField label="Neural adaptation score" unit="0–10 · optional" step="1"
+              value={adv.neural_adaptation_score} onChange={setA("neural_adaptation_score")} />
+            <NumField label="Dynamic visual stability" unit="0–10 · optional" step="1"
+              value={adv.dynamic_visual_stability} onChange={setA("dynamic_visual_stability")} />
+            <NumField label="Mesopic pupil" unit="mm · optional" step="0.1"
+              value={adv.mesopic_pupil} onChange={setA("mesopic_pupil")} />
+            <NumField label="Typical working distance" unit="cm · optional" step="1"
+              value={adv.typical_working_distance} onChange={setA("typical_working_distance")} />
+            <SelectField label="Low-light visual demand" unit="" value={adv.low_light_demand}
+              onChange={setA("low_light_demand")} options={["Low", "Moderate", "High"]} />
+          </div>
+          <label className="check">
+            <input type="checkbox" checked={adv.night_driving}
+              onChange={(e) => setAdv({ ...adv, night_driving: e.target.checked })} />
+            <span>Night driving</span>
+          </label>
+        </Disclosure>
+
+        <Disclosure open={resOpen} toggle={() => setResOpen(!resOpen)}
+          label="Tier 3 · Research Mode"
+          note="Full CSF curve, electrophysiology, wavefront">
+          <div className="cap cap-sm" style={{ margin: "6px 0 12px" }}>SPATIAL FREQUENCY CURVE</div>
+          <div className="grid2">
+            <NumField label="Low spatial frequency CSF" unit="0–100 · optional" step="1" value={res.csf_low} onChange={setR("csf_low")} />
+            <NumField label="Mid spatial frequency CSF" unit="0–100 · optional" step="1" value={res.csf_mid} onChange={setR("csf_mid")} />
+            <NumField label="High spatial frequency CSF" unit="0–100 · optional" step="1" value={res.csf_high} onChange={setR("csf_high")} />
+          </div>
+          <span className="note" style={{ fontSize: 11, display: "block", marginTop: 8 }}>
+            A measured triplet overrides the Quick Fitting CSF band.
+          </span>
+
+          <div className="cap cap-sm" style={{ margin: "20px 0 12px" }}>ELECTROPHYSIOLOGY &amp; WAVEFRONT</div>
+          <div className="grid2">
+            <NumField label="VEP" unit="optional" step="0.1" value={res.vep} onChange={setR("vep")} />
+            <NumField label="ERG" unit="optional" step="0.1" value={res.erg} onChange={setR("erg")} />
+            <NumField label="Eye tracking" unit="optional" step="0.1" value={res.eye_tracking} onChange={setR("eye_tracking")} />
+            <NumField label="HOA RMS" unit="µm · optional" step="0.01" value={res.hoa_rms} onChange={setR("hoa_rms")} />
+            <NumField label="Corneal spherical aberration" unit="µm · optional" step="0.01" value={res.corneal_sa} onChange={setR("corneal_sa")} />
+            <NumField label="Coma" unit="µm · optional" step="0.01" value={res.coma} onChange={setR("coma")} />
+            <NumField label="Trefoil" unit="µm · optional" step="0.01" value={res.trefoil} onChange={setR("trefoil")} />
+            <NumField label="Corneal astigmatism" unit="D · optional" step="0.25"
+              value={res.corneal_astigmatism} onChange={setR("corneal_astigmatism")} />
+            <NumField label="Corneal eccentricity" unit="e · optional" step="0.01" pending
+              value={res.corneal_eccentricity} onChange={setR("corneal_eccentricity")} />
+          </div>
+        </Disclosure>
 
         <div className="divider" style={{ margin: "20px 0" }} />
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 16 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16 }}>
+          <span className="note">
+            Optimization runs server-side. The optical design itself is not exposed to this browser.
+          </span>
           <button className="btn btn-primary" disabled={loading} onClick={run}>
-            {loading ? "Generating…" : "Generate Recommendation"}
+            {loading ? "Generating…" : "Generate Personalized Design"}
           </button>
         </div>
       </div>
@@ -262,11 +478,80 @@ function Screen1({ inp, set, adv, setAdv, loading, run, go }) {
   );
 }
 
-function NumField({ label, unit, step, value, onChange }) {
+function TierHead({ n, title, note }) {
   return (
-    <div className="field">
-      <label>{label} <span className="unit">· {unit}</span></label>
+    <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
+      <span className="tier-chip">TIER {n}</span>
+      <span className="cap">{title}</span>
+      <span className="note" style={{ marginLeft: "auto" }}>{note}</span>
+    </div>
+  );
+}
+
+function Disclosure({ open, toggle, label, note, children }) {
+  return (
+    <div style={{ marginBottom: 10 }}>
+      <button className="crumb" style={{ font: "500 12px Inter", color: "#78716c" }} onClick={toggle}>
+        {open ? "▾" : "▸"} {label}
+      </button>
+      <span className="note" style={{ fontSize: 11, marginLeft: 8 }}>{note}</span>
+      {open && <div style={{ marginTop: 14, paddingLeft: 2 }}>{children}</div>}
+    </div>
+  );
+}
+
+function EyeBlock({ eye, prefix, inp, set }) {
+  const k = (s) => `${prefix}${s}`;
+  return (
+    <div className="eye-card">
+      <div className="cap cap-sm" style={{ marginBottom: 12 }}>{eye}</div>
+      <div className="grid2">
+        <NumField label="Sphere" unit="D" step="0.25" value={inp[k("Sphere")]} onChange={set(k("Sphere"))} />
+        <NumField label="Cylinder" unit="D" step="0.25" value={inp[k("Cyl")]} onChange={set(k("Cyl"))} />
+        <NumField label="Axis" unit="°" step="1" value={inp[k("Axis")]} onChange={set(k("Axis"))} />
+        <NumField label="Axial length" unit="mm" step="0.01" value={inp[k("Al")]} onChange={set(k("Al"))} />
+      </div>
+    </div>
+  );
+}
+
+// `pending` marks an input the engine accepts and stores but does not yet use.
+// Showing that is not cosmetic: an unmarked dead field makes a clinician
+// believe a measurement influenced the design when it did not.
+function NumField({ label, unit, step, value, onChange, pending }) {
+  return (
+    <div className={pending ? "field field-pending" : "field"}>
+      <label>
+        {label}{unit ? <span className="unit"> · {unit}</span> : null}
+        {pending && <span className="pending-tag" title={PENDING_HINT}>not yet used</span>}
+      </label>
       <input type="number" step={step} value={value} onChange={onChange} />
+    </div>
+  );
+}
+
+function SelectField({ label, unit, value, onChange, options, pending }) {
+  return (
+    <div className={pending ? "field field-pending" : "field"}>
+      <label>
+        {label}{unit ? <span className="unit"> · {unit}</span> : null}
+        {pending && <span className="pending-tag" title={PENDING_HINT}>not yet used</span>}
+      </label>
+      <select value={value} onChange={onChange}>
+        {options.map((o) => <option key={o} value={o}>{o}</option>)}
+      </select>
+    </div>
+  );
+}
+
+function ReadRow({ label, value }) {
+  return (
+    <div style={{
+      display: "flex", justifyContent: "space-between", alignItems: "baseline",
+      padding: "7px 0", borderBottom: "1px solid var(--border)",
+    }}>
+      <span style={{ font: "400 12px Inter", color: "var(--warm)" }}>{label}</span>
+      <span style={{ font: "500 12px Inter", color: "var(--ink)" }}>{value}</span>
     </div>
   );
 }
@@ -284,181 +569,268 @@ function Slider({ label, unit, min, max, step, value, onChange, hint }) {
   );
 }
 
-function ReadRow({ label, value }) {
-  return (
-    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline",
-      padding: "7px 0", borderBottom: "1px solid var(--border)" }}>
-      <span style={{ font: "400 12px Inter", color: "var(--warm)" }}>{label}</span>
-      <span style={{ font: "500 12px Inter", color: "var(--ink)" }}>{value}</span>
-    </div>
-  );
-}
+// --------------------------------------------------------------------------
+// Screen 2 — clinical results.
+//
+// What is shown: Design ID, phenotype, indices, predicted outcomes, why this
+// design was chosen. What is NOT shown, and never arrives in the browser at
+// all: spherical aberration, microstructure geometry, fill factor, spatial
+// density, jitter, temporal asymmetry.
+// --------------------------------------------------------------------------
 
-function Screen2({ pred, go, onFollowup, onExport }) {
-  const pct = (x) => Math.round(x * 100);
-  const cases = ["A", "B", "C", "D"].map((k) => {
-    const p = pred.quadrant_probabilities[k];
-    return { k, prob: pct(p), alpha: (0.05 + p * 0.34).toFixed(3), likely: k === pred.recommended_case };
-  });
-  const cellStyle = (c) => ({
-    background: `rgba(59,166,241,${c.alpha})`,
-    border: c.likely ? "1.5px solid #3398e1" : "1px solid #e8e6e5",
-  });
-
-  const tierKey = pred.need_more_data || pred.prediction_confidence < 55
-    ? "review"
-    : pred.prediction_confidence >= 70 && (pred.recommended_case === "A" || pred.recommended_case === "B")
-      ? "ready" : "caution";
+function Screen2({ pred, job, submitting, onSubmit, go, onFollowup, onExport }) {
+  const conf = pred.prediction_confidence;
+  const tierKey = conf < 70 ? "review" : conf < 82 ? "caution" : "ready";
   const t = RESULT_TIERS[tierKey];
-  const bannerTitle = tierKey === "ready"
-    ? `Proceed with ${pred.profile.toLowerCase()} myopia-control fitting`
-    : tierKey === "review" ? "Hold — review before committing to a fit"
-      : "Fit with a shortened review interval";
-  const bannerBody = `Case ${pred.recommended_case} most likely at ${Math.round(pred.prediction_confidence)}% confidence. ${pred.recommended_action}`;
-
-  const contribs = pred.top_contributors;
-  const maxAbs = Math.max(...contribs.map((c) => Math.abs(c.percent)), 1);
 
   return (
     <div>
       <Crumbs step={2} go={go} />
-      <h1 className="title" style={{ fontSize: 28, marginBottom: 2 }}>Prediction results</h1>
-      <p className="sub" style={{ fontSize: 13, marginBottom: 14 }}>Deterministic output — probabilities are model estimates, not a clinically validated outcome.</p>
+      <h1 className="title" style={{ fontSize: 28, marginBottom: 2 }}>Individual Visual Phenotype</h1>
+      <p className="sub" style={{ fontSize: 13, marginBottom: 14 }}>
+        Deterministic output — predicted percentages are model estimates, not a clinically
+        validated outcome.
+      </p>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginBottom: 16 }}>
-        <Metric compact cap="RECOMMENDED PROFILE" big={`${pred.profile} control`}
-          sub={<>Myopia-control strength · SA {pred.sa_profile}<br />Temporal +{Math.round((pred.temporal_multiplier - 1) * 100)}%</>} />
-        <Metric compact cap="EXPECTED AL REDUCTION" big={pred.al_reduction_band}
-          sub={`~${pred.expected_al_reduction_mm_per_year.toFixed(2)} mm/yr vs. untreated`} />
-        <Metric compact cap="RECOMMENDED FOLLOW-UP" big={pred.recommended_follow_up} sub="Next axial-length check" />
+      <div className="design-hero">
+        <div>
+          <div className="metric-cap">RECOMMENDED PERSONALIZED OPTICAL DESIGN</div>
+          <div className="design-id">{pred.design_id}</div>
+          <div className="metric-sub">
+            Phenotype {pred.phenotype.code} · {pred.binocular_pair} pair · optimized for {pred.primary_goal.toLowerCase()}
+          </div>
+          {pred.refit && (
+            <div className="refit-note">
+              Revision {pred.refit.revision} · re-fitted from {pred.refit.previous_design_id} after{" "}
+              {pred.refit.annualized_delta_al.toFixed(2)} mm/yr ({pred.refit.progression_band.toLowerCase()})
+            </div>
+          )}
+        </div>
+        <div className="design-eyes">
+          <div><span className="eye-tag">OD</span> {pred.eyes.OD.profile_label}</div>
+          <div><span className="eye-tag">OS</span> {pred.eyes.OS.profile_label}</div>
+        </div>
       </div>
 
-      <div className="cap cap-sm" style={{ marginBottom: 10 }}>NSO PREDICTION</div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 12, marginBottom: 16 }}>
-        <ScoreCard cap="CONTROL SCORE" value={Math.round(pred.control_score)} label={scoreLabel(Math.round(pred.control_score))} />
-        <ScoreCard cap="ADAPTATION SCORE" value={Math.round(pred.adaptation_score)} label={scoreLabel(Math.round(pred.adaptation_score))} />
-        <ScoreCard cap="ROBUSTNESS" value={Math.round(pred.robustness)} label={robustLabel(Math.round(pred.robustness))} />
-        <ScoreCard cap="ENTROPY SCORE" value={Math.round(pred.entropy)} />
-        <ScoreCard cap="CONFIDENCE" value={Math.round(pred.prediction_confidence)} suffix="%" />
+      <div className="cap cap-sm" style={{ margin: "20px 0 10px" }}>VISUAL PHENOTYPE — FIVE DOMAINS</div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 12, marginBottom: 20 }}>
+        {pred.phenotype.domains.map((d) => (
+          <div key={d.key} className="card" style={{ padding: "14px 16px" }}>
+            <div className="metric-cap" style={{ marginBottom: 6 }}>{d.key} — {d.name}</div>
+            <div className="metric-big" style={{ fontSize: 26, lineHeight: 1 }}>{d.score}</div>
+            <div className="metric-sub" style={{ marginTop: 6 }}>{d.grade_label} load</div>
+          </div>
+        ))}
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1.5fr 1fr", gap: 12, marginBottom: 16 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
         <div className="card" style={{ padding: 20 }}>
-          <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 14 }}>
-            <div className="cap cap-sm">OUTCOME PROBABILITY MATRIX</div>
-            <div className="note">Σ = 100%</div>
-          </div>
-          <div className="matrix-grid">
-            <div />
-            <div className="axis-col">High adaptation<br /><span className="pct">{pct(pred.adaptation_probability)}%</span></div>
-            <div className="axis-col">Low adaptation<br /><span className="pct">{pct(1 - pred.adaptation_probability)}%</span></div>
-
-            <div className="axis-row">High<br />control<br /><span className="pct">{pct(pred.control_probability)}%</span></div>
-            <Cell c={cases[0]} style={cellStyle(cases[0])} />
-            <Cell c={cases[1]} style={cellStyle(cases[1])} />
-
-            <div className="axis-row">Low<br />control<br /><span className="pct">{pct(1 - pred.control_probability)}%</span></div>
-            <Cell c={cases[2]} style={cellStyle(cases[2])} />
-            <Cell c={cases[3]} style={cellStyle(cases[3])} />
-          </div>
-          <div className="note" style={{ marginTop: 12 }}>Control probability × Adaptation probability. Cells shade with likelihood.</div>
+          <div className="cap cap-sm" style={{ marginBottom: 14 }}>AI-DERIVED VISUAL INDICES</div>
+          {INDEX_LABELS.map(([key, label]) => (
+            <div key={key} style={{ display: "grid", gridTemplateColumns: "150px 1fr 38px", alignItems: "center", gap: 10, marginBottom: 9 }}>
+              <span style={{ font: "400 12px Inter", color: "var(--warm)" }}>{label}</span>
+              <div className="bar-track" style={{ marginBottom: 0 }}>
+                <div className="bar-fill" style={{ width: `${pred.indices[key]}%` }} />
+              </div>
+              <span style={{ font: "500 12px Inter", textAlign: "right" }}>{Math.round(pred.indices[key])}</span>
+            </div>
+          ))}
         </div>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          <div className="card" style={{ padding: 16 }}>
-            <div className="cap cap-sm" style={{ marginBottom: 12 }}>RESPONDER PROBABILITY</div>
-            {["Good", "Moderate", "Poor"].map((k) => (
-              <div key={k} style={{ display: "grid", gridTemplateColumns: "68px 1fr 40px", alignItems: "center", gap: 10, marginBottom: 8 }}>
-                <span style={{ font: "400 12px Inter" }}>{k}</span>
-                <div className="bar-track" style={{ marginBottom: 0 }}>
-                  <div className="bar-fill" style={{ width: `${pct(pred.responder_probabilities[k])}%` }} />
+          <div className="card" style={{ padding: 20 }}>
+            <div className="cap cap-sm" style={{ marginBottom: 14 }}>PREDICTED PERFORMANCE</div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 12 }}>
+              {PREDICTED_LABELS.map(([key, label]) => (
+                <div key={key}>
+                  <div className="metric-cap" style={{ marginBottom: 4 }}>{label}</div>
+                  <div className="metric-big" style={{ fontSize: 24, lineHeight: 1 }}>{pred.predicted[key]}%</div>
+                  <div className="metric-sub" style={{ marginTop: 3 }}>{scoreLabel(pred.predicted[key])}</div>
                 </div>
-                <span style={{ font: "500 12px Inter", textAlign: "right" }}>{pct(pred.responder_probabilities[k])}%</span>
-              </div>
-            ))}
+              ))}
+            </div>
           </div>
           <div className="banner" style={{ background: t.bg, border: `1px solid ${t.border}`, padding: "12px 14px" }}>
             <span className="banner-label" style={{ color: t.lbColor, background: t.lbBg, border: `1px solid ${t.lbBorder}` }}>{t.label}</span>
             <div>
-              <div className="banner-title" style={{ color: t.title, fontSize: 13 }}>{bannerTitle}</div>
-              <div className="banner-body" style={{ color: t.body, fontSize: 12 }}>{bannerBody}</div>
+              <div className="banner-title" style={{ color: t.title, fontSize: 13 }}>
+                Prediction confidence {conf}% · review in {pred.recommended_follow_up}
+              </div>
+              <div className="banner-body" style={{ color: t.body, fontSize: 12 }}>
+                {tierKey === "ready"
+                  ? "Extended measurements support this fit. Proceed and re-check at the scheduled interval."
+                  : "Adding Tier 2 / Tier 3 measurements would raise confidence before committing to this fit."}
+              </div>
             </div>
           </div>
         </div>
       </div>
 
-      <div className="card" style={{ padding: 20 }}>
+      <div className="card" style={{ padding: 20, marginBottom: 16 }}>
         <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 12 }}>
-          <div className="cap cap-sm">TOP CONTRIBUTORS</div>
-          <div className="note">Signed share of decision weight</div>
+          <div className="cap cap-sm">CANDIDATE COMPARISON · JOINT OPTIMIZATION</div>
+          <div className="note">
+            {pred.joint_optimization.pairs_evaluated} OD/OS pairs evaluated together ·
+            binocular cost {pred.joint_optimization.binocular_cost}
+          </div>
         </div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px 28px" }}>
-          {contribs.map((c) => {
-            const pos = c.percent >= 0;
-            return (
-              <div key={c.factor} style={{ display: "grid", gridTemplateColumns: "96px 1fr 50px", alignItems: "center", gap: 12 }}>
-                <span className="contrib-name" style={{ fontSize: 12 }}>{c.factor}</span>
-                <div className="contrib-track">
-                  <div className="contrib-fill" style={{ width: `${(Math.abs(c.percent) / maxAbs) * 100}%`, background: pos ? "#3ba6f1" : "#d6d3d1" }} />
-                </div>
-                <span className="contrib-val" style={{ color: pos ? "#0c0a09" : "#78716c", fontSize: 12 }}>
-                  <span style={{ color: pos ? "#3398e1" : "#a8a29e", marginRight: 3 }}>{pos ? "▲" : "▼"}</span>
-                  {pos ? "+" : "−"}{Math.abs(c.percent)}%
-                </span>
-              </div>
-            );
-          })}
+        {["OD", "OS"].map((eye) => (
+          <div key={eye} style={{ marginBottom: 14 }}>
+            <div className="metric-cap" style={{ marginBottom: 6 }}>{eye}</div>
+            <table className="ctable">
+              <thead>
+                <tr>
+                  <th>Candidate</th><th>Control</th><th>Comfort</th>
+                  <th>Adaptation</th><th>Acuity retention</th><th>Feasible</th><th>Loss</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pred.candidate_comparison[eye].map((c) => (
+                  <tr key={c.candidate} className={c.selected ? "row-selected" : ""}>
+                    <td>
+                      {c.candidate}
+                      {c.selected && <span className="pill-likely" style={{ marginLeft: 8 }}>SELECTED</span>}
+                      {!c.selected && c.monocular_best &&
+                        <span className="pill-mono" style={{ marginLeft: 8 }}>BEST ALONE</span>}
+                    </td>
+                    <td>{c.predicted_control}</td>
+                    <td>{c.predicted_comfort}</td>
+                    <td>{c.predicted_adaptation}</td>
+                    <td>{c.predicted_acuity_retention}</td>
+                    <td>{c.feasible ? "Yes" : "No"}</td>
+                    <td>{c.relative_loss.toFixed(3)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ))}
+        <div className="note" style={{ marginTop: 4 }}>{pred.selection_rationale}</div>
+        {pred.joint_optimization.overruled_monocular_choice && (
+          <div className="note" style={{ marginTop: 6, color: "#185fa5" }}>
+            The pair was chosen over each eye&apos;s individual optimum — marked
+            BEST ALONE — because the two eyes fuse better together.
+          </div>
+        )}
+      </div>
+
+      {pred.spatial_frequency_descriptors.csf_auc !== null && (
+        <div className="card" style={{ padding: 20, marginBottom: 16 }}>
+          <div className="cap cap-sm" style={{ marginBottom: 12 }}>
+            SPATIAL FREQUENCY PROFILE · AUTO-CALCULATED
+          </div>
+          <div className="grid2">
+            <ReadRow label="CSF AUC" value={pred.spatial_frequency_descriptors.csf_auc} />
+            <ReadRow label="CSF slope" value={`${pred.spatial_frequency_descriptors.csf_slope} / decade`} />
+            <ReadRow label="Sensitivity centroid" value={`${pred.spatial_frequency_descriptors.csf_centroid_cpd} cpd`} />
+            {pred.interocular_acuity_difference !== null && (
+              <ReadRow label="Interocular VA difference" value={`${pred.interocular_acuity_difference} logMAR`} />
+            )}
+          </div>
+        </div>
+      )}
+
+      <div className="card" style={{ padding: 20, marginBottom: 16 }}>
+        <div className="cap cap-sm" style={{ marginBottom: 12 }}>WHY THIS DESIGN</div>
+        <ul className="reasons">
+          {pred.explainable_summary.map((line, i) => <li key={i}>{line}</li>)}
+        </ul>
+        <div className="ip-note">
+          The optical design recipe — spherical aberration, microstructure geometry, spatial
+          statistics and OD/OS asymmetry — is computed and held server-side under{" "}
+          <strong>{pred.design_id}</strong>. It is not transmitted to this browser and is not
+          included in the exported report.
         </div>
       </div>
 
+      {job && (
+        <div className="card" style={{ padding: 20, marginBottom: 16 }}>
+          <div className="cap cap-sm" style={{ marginBottom: 12 }}>MANUFACTURING JOB</div>
+          <div className="grid2" style={{ marginBottom: 12 }}>
+            <div>
+              <div className="metric-cap" style={{ marginBottom: 4 }}>JOB ID</div>
+              <div className="metric-big" style={{ fontSize: 20 }}>{job.job_id}</div>
+            </div>
+            <div>
+              <div className="metric-cap" style={{ marginBottom: 4 }}>STATUS</div>
+              <div className="metric-big" style={{ fontSize: 20 }}>{job.status}</div>
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            {job.segments.map((s) => (
+              <div key={s.segment} className="segment-chip">
+                <span className="eye-tag">{s.segment}</span> {s.package} · {s.status}
+              </div>
+            ))}
+          </div>
+          <div className="note" style={{ marginTop: 10 }}>
+            Released to authorized manufacturers over an encrypted API, one segment each.
+            No single vendor receives the complete design.
+          </div>
+        </div>
+      )}
+
       <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 10, marginTop: 12 }}>
-        <button className="btn btn-ghost" onClick={onExport}>Export report ⤓</button>
+        <button className="btn btn-ghost" onClick={onExport}>Export clinical report ⤓</button>
+        <button className="btn btn-ghost" disabled={submitting || !!job} onClick={onSubmit}>
+          {job ? "Submitted ✓" : submitting ? "Submitting…" : "Submit to Manufacturing"}
+        </button>
         <button className="btn btn-primary" onClick={onFollowup}>Track follow-up →</button>
       </div>
     </div>
   );
 }
 
-function Cell({ c, style }) {
-  return (
-    <div className="cell" style={style}>
-      <div className="cell-head">
-        <span className="cell-label">Case {c.k}</span>
-        {c.likely && <span className="pill-likely">MOST LIKELY</span>}
-      </div>
-      <span className="cell-prob">{c.prob}%</span>
-    </div>
-  );
-}
+// --------------------------------------------------------------------------
+// Screen 3 — follow-up. Support levels, not design tiers.
+// --------------------------------------------------------------------------
 
-function Metric({ cap, big, sub, compact }) {
-  return (
-    <div className="card" style={{ padding: compact ? 16 : 20 }}>
-      <div className="metric-cap" style={compact ? { marginBottom: 8 } : undefined}>{cap}</div>
-      <div className="metric-big" style={compact ? { fontSize: 26 } : undefined}>{big}</div>
-      <div className="metric-sub" style={compact ? { marginTop: 6 } : undefined}>{sub}</div>
+const FlowStep = ({ label, value, highlight }) => (
+  <div style={{
+    flex: "1 1 0", minWidth: 110, background: highlight ? "#e6f1fb" : "var(--track)",
+    border: highlight ? "1px solid #3398e1" : "1px solid var(--border)",
+    borderRadius: 8, padding: "10px 12px",
+  }}>
+    <div style={{ font: "600 10px Inter", letterSpacing: "0.06em", color: "var(--warm)", marginBottom: 4 }}>
+      {label.toUpperCase()}
     </div>
-  );
-}
+    <div style={{ font: "500 16px Inter", color: highlight ? "#185fa5" : "var(--ink)" }}>{value}</div>
+  </div>
+);
+
+const Arrow = () => <span style={{ color: "var(--ash)", fontSize: 18 }}>→</span>;
 
 const FU_TIERS = {
-  "Maintain current NSO profile": { key: "STABLE", ...RESULT_TIERS.ready,
-    body: (a) => `Annualized progression is ${a} mm/year — within the controlled band. Continue the current NSO strength and re-check at the next scheduled interval.` },
-  "Consider increasing one level": { key: "MONITOR", ...RESULT_TIERS.caution,
-    body: (a) => `Annualized progression is ${a} mm/year — mild. Step the NSO profile up one level and shorten the review interval to confirm the response.` },
-  "Escalate NSO strength and schedule clinical review": { key: "ESCALATE", ...RESULT_TIERS.review,
-    body: (a) => `Annualized progression is ${a} mm/year — fast. Move to the strongest profile and book a clinical review to rule out contributing factors.` },
+  Controlled: { key: "STABLE", ...RESULT_TIERS.ready,
+    body: (a) => `Annualized progression is ${a} mm/year — within the controlled band. Keep the current design and re-check at the next scheduled interval.` },
+  Borderline: { key: "MONITOR", ...RESULT_TIERS.caution,
+    body: (a) => `Annualized progression is ${a} mm/year — mild. Step the optical support up one level and shorten the review interval to confirm the response.` },
+  Progressing: { key: "ESCALATE", ...RESULT_TIERS.review,
+    body: (a) => `Annualized progression is ${a} mm/year — fast. Move to maximum optical support and book a clinical review to rule out contributing factors.` },
 };
 
-function Screen3({ fu, setFuVal, res, go, onDownload }) {
+function Metric({ cap, big, sub }) {
+  return (
+    <div className="card" style={{ padding: 20 }}>
+      <div className="metric-cap">{cap}</div>
+      <div className="metric-big">{big}</div>
+      <div className="metric-sub">{sub}</div>
+    </div>
+  );
+}
+
+function Screen3({ fu, setFuVal, res, go, onDownload, onRefit, canRefit, refitting }) {
   const fmt = (x) => `${x >= 0 ? "+" : "−"}${Math.abs(x).toFixed(2)}`;
-  const tier = res ? FU_TIERS[res.advice] : null;
+  const tier = res ? FU_TIERS[res.progression_band] : null;
 
   return (
     <div>
       <Crumbs step={3} go={go} />
       <h1 className="title">Follow-up visit</h1>
-      <p className="sub">Re-measure axial length after a period of lens wear. Progression is derived deterministically from the interval — no learned parameters.</p>
+      <p className="sub">
+        Re-measure axial length after a period of lens wear. Progression is derived
+        deterministically from the interval — no learned parameters.
+      </p>
 
       <div className="card lift" style={{ marginTop: 20, marginBottom: 16 }}>
         <div className="cap" style={{ marginBottom: 16 }}>AXIAL-LENGTH READINGS</div>
@@ -490,9 +862,13 @@ function Screen3({ fu, setFuVal, res, go, onDownload }) {
             <Arrow />
             <FlowStep label="Annualized" value={`${res.annualized_delta_al.toFixed(2)} mm/yr`} />
             <Arrow />
-            <FlowStep label="Next NSO profile" value={`${res.next_profile} control`} highlight />
+            <FlowStep label="Next optical support" value={res.next_support_level} highlight />
           </div>
-          <div className="note" style={{ marginTop: 10 }}>NSO profile = myopia-control strength (Low → Medium → High).</div>
+          <div className="note" style={{ marginTop: 10 }}>
+            {res.refit_required
+              ? "A refit is indicated — regenerate the personalized design to obtain a new Design ID."
+              : "No refit indicated. The current Design ID remains valid."}
+          </div>
         </div>
       )}
 
@@ -508,7 +884,12 @@ function Screen3({ fu, setFuVal, res, go, onDownload }) {
 
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, marginTop: 20 }}>
         <span className="note">Report appends this visit to the patient&apos;s progression record.</span>
-        <button className="btn btn-primary" onClick={onDownload}>Download updated follow-up report ⤓</button>
+        <div style={{ display: "flex", gap: 10 }}>
+          <button className="btn btn-ghost" onClick={onDownload}>Download follow-up report ⤓</button>
+          <button className="btn btn-primary" disabled={!canRefit || refitting} onClick={onRefit}>
+            {refitting ? "Re-fitting…" : "Re-fit from this visit →"}
+          </button>
+        </div>
       </div>
     </div>
   );

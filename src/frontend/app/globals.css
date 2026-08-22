@@ -59,11 +59,13 @@ body {
 .field { display: flex; flex-direction: column; gap: 6px; }
 .field label { font: 500 12px "Inter"; color: var(--warm); }
 .field .unit { color: var(--ash); font-weight: 400; }
-.field input[type="number"] {
+.field input[type="number"],
+.field select {
   background: var(--card); border: 1px solid var(--muted-border); border-radius: 6px;
   padding: 9px 12px; font: 400 14px "Inter"; color: var(--ink); width: 100%;
 }
-.field input[type="number"]:focus {
+.field input[type="number"]:focus,
+.field select:focus {
   outline: none; border-color: var(--cyan);
   box-shadow: 0 0 0 2px rgba(59,166,241,0.28);
 }
@@ -131,6 +133,74 @@ input[type="range"]::-moz-range-thumb {
 .note { font: 400 12px "Inter"; color: var(--ash); line-height: 1.5; }
 .err { font: 400 13px "Inter"; color: #991b1b; background: #fef2f2; border: 1px solid #fca5a5; border-radius: 8px; padding: 10px 14px; margin-bottom: 16px; }
 
+/* V2 — tiered input */
+.tier-chip {
+  font: 600 10px "Inter"; letter-spacing: 0.1em; border-radius: 9999px;
+  padding: 3px 9px; color: #0c447c; background: #e6f1fb; border: 1px solid #bcdcf8;
+}
+.eye-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.eye-card { border: 1px solid var(--border); border-radius: 10px; padding: 16px; background: var(--track); }
+.check { display: flex; align-items: center; gap: 8px; margin-top: 14px; font: 400 13px "Inter"; color: var(--ink); }
+
+/* V2 — design identity */
+.design-hero {
+  display: flex; align-items: center; justify-content: space-between; gap: 24px; flex-wrap: wrap;
+  border: 1px solid #bcdcf8; background: linear-gradient(180deg, #f2f8fe, var(--card));
+  border-radius: 12px; padding: 20px 24px;
+}
+.design-id { font: 600 34px "Inter"; letter-spacing: -0.5px; color: #0c447c; margin: 4px 0 6px; }
+.design-eyes { display: flex; flex-direction: column; gap: 8px; font: 400 13px "Inter"; color: var(--ink); }
+.eye-tag {
+  font: 600 10px "Inter"; letter-spacing: 0.08em; color: var(--warm);
+  background: var(--track); border: 1px solid var(--border); border-radius: 4px;
+  padding: 2px 6px; margin-right: 8px;
+}
+
+/* V2 — candidate table */
+.ctable { width: 100%; border-collapse: collapse; font: 400 12px "Inter"; }
+.ctable th {
+  text-align: left; font: 600 10px "Inter"; letter-spacing: 0.06em; color: var(--warm);
+  background: var(--track); border: 1px solid var(--border); padding: 7px 10px;
+}
+.ctable td { border: 1px solid var(--border); padding: 7px 10px; color: var(--ink); }
+.ctable .row-selected td { background: #e6f1fb; font-weight: 500; }
+
+/* V2 — explainability + IP notice */
+.reasons { margin: 0; padding-left: 18px; font: 400 13px "Inter"; color: var(--ink); line-height: 1.7; }
+.ip-note {
+  margin-top: 14px; padding: 12px 14px; border-radius: 8px;
+  background: var(--track); border: 1px solid var(--border);
+  font: 400 12px "Inter"; color: var(--warm); line-height: 1.6;
+}
+.segment-chip {
+  font: 400 12px "Inter"; color: var(--ink); background: var(--track);
+  border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px;
+}
+
 @media (max-width: 720px) {
   .grid2 { grid-template-columns: 1fr; }
+  .eye-grid { grid-template-columns: 1fr; }
+}
+
+/* V2 — joint optimization + closed loop */
+.pill-mono {
+  font: 600 9px "Inter"; letter-spacing: 0.08em; border-radius: 9999px;
+  padding: 2px 7px; color: var(--warm); background: var(--track);
+  border: 1px solid var(--border); white-space: nowrap;
+}
+.refit-note {
+  margin-top: 8px; font: 400 12px "Inter"; color: #185fa5;
+  background: #e6f1fb; border: 1px solid #bcdcf8; border-radius: 6px;
+  padding: 6px 10px; display: inline-block;
+}
+
+/* Inputs the engine stores but does not yet consume. Marked rather than hidden
+   so the measurement is still recorded for future calibration, while the
+   clinician can see it did not influence this design. */
+.field-pending label { color: var(--ash); }
+.field-pending input, .field-pending select { border-style: dashed; }
+.pending-tag {
+  font: 600 9px "Inter"; letter-spacing: 0.06em; text-transform: uppercase;
+  color: #92400e; background: #fef3c7; border: 1px solid #fcd34d;
+  border-radius: 9999px; padding: 1px 6px; margin-left: 6px; cursor: help;
 }

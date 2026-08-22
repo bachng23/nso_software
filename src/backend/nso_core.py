@@ -2,8 +2,8 @@
 NSO AI-PC Fitting v0.3 — computation engine (Streamlit-free).
 
 All the deterministic rule-based logic lives here so it can be imported by
-the FastAPI backend and the tests without pulling in Streamlit. The Streamlit
-UI in nso_mvp.py imports everything from this module.
+the FastAPI backend and the tests without pulling in a UI. The internal design
+console (internal/design_console.py) imports the same module.
 """
 
 import numpy as np

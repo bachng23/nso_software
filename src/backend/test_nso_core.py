@@ -1,7 +1,7 @@
 """
 Tests for the NSO MVP computation logic.
 
-These cover only the pure helper functions in ``nso_mvp`` (no Streamlit UI is
+These cover the pure computation kernel in ``nso_core`` (no UI is
 executed on import, since the UI lives inside ``main()``). Run with:
 
     cd nso_software
