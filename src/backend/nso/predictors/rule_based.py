@@ -40,7 +40,7 @@ class RuleBasedPredictor:
         comfort = clip100(
             100
             - engine.visual_stress(
-                dv["entropy"], dv["sa_strength"], pv["photopic_pupil"],
+                dv["nso_entropy"], dv["nso_peak_target_d"], pv["photopic_pupil"],
                 pv["comfort_value"],
             )
         )
@@ -48,13 +48,13 @@ class RuleBasedPredictor:
             pv["age"],
             pv["comfort_value"],
             pv["csf_value"],
-            dv["entropy"],
+            dv["nso_entropy"],
         )
         acuity = dv["target_mtf_modulation"] * 100
         manufacturability = clip100(
             100
-            - 0.35 * dv["fill_factor_pct"]
-            - 4.0 * max(0.0, dv["microstructure_height_um"] - 2.5)
+            - 0.35 * dv["nso_mean_fill_factor_pct"]
+            - 4.0 * max(0.0, max(dv[k] for k in dv if k.endswith("_height_um")) - 2.5)
         )
 
         return OutcomePrediction(

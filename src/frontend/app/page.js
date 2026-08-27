@@ -33,7 +33,7 @@ const INDEX_LABELS = [
 ];
 
 const PREDICTED_LABELS = [
-  ["myopia_control", "MYOPIA CONTROL"],
+  ["nso_control_score", "NSO CONTROL SCORE"],
   ["visual_comfort", "VISUAL COMFORT"],
   ["adaptation", "ADAPTATION"],
   ["binocular_compatibility", "BINOCULAR COMPAT."],
@@ -74,10 +74,22 @@ const ADV_DEFAULTS = {
 
 const RESEARCH_DEFAULTS = {
   csf_low: "", csf_mid: "", csf_high: "",
-  vep: "", erg: "", eye_tracking: "",
+  // Protocol, so the engine reads the curve at the frequencies the instrument
+  // actually used instead of ones it assumed on the clinic's behalf.
+  csf_device: "", csf_test_protocol: "", csf_freq_low: "", csf_freq_mid: "",
+  csf_freq_high: "", csf_scale: "index_0_100",
+  // Structured VEP. A bare number carries no stimulus, unit or normative
+  // reference, so it is recorded but cannot raise prediction confidence.
+  vep: "", vep_stimulus: "", vep_amplitude_uv: "", vep_latency_ms: "",
+  vep_interocular_difference_ms: "", vep_z_score: "",
+  erg: "", erg_protocol: "", erg_z_score: "",
+  eye_tracking: "", fixation_stability: "", blink_rate: "",
+  vergence_stability: "", pupil_dynamics: "", gaze_distribution: "",
   hoa_rms: "", corneal_sa: "", coma: "", trefoil: "",
   corneal_astigmatism: "", corneal_eccentricity: "",
 };
+
+const CSF_SCALES = ["index_0_100", "log_cs"];
 
 export default function Page() {
   const [step, setStep] = useState(1);
@@ -138,7 +150,31 @@ export default function Page() {
       low_light_demand: adv.low_light_demand,
 
       csf_low: orNull(res.csf_low), csf_mid: orNull(res.csf_mid), csf_high: orNull(res.csf_high),
-      vep: orNull(res.vep), erg: orNull(res.erg), eye_tracking: orNull(res.eye_tracking),
+      csf_device: res.csf_device || "unspecified",
+      csf_test_protocol: res.csf_test_protocol || "unspecified",
+      csf_scale: res.csf_scale || "index_0_100",
+      // Only send frequencies when all three are given: a partial list would
+      // silently misalign the curve.
+      csf_frequencies_cpd:
+        res.csf_freq_low !== "" && res.csf_freq_mid !== "" && res.csf_freq_high !== ""
+          ? [num(res.csf_freq_low), num(res.csf_freq_mid), num(res.csf_freq_high)]
+          : null,
+
+      vep: orNull(res.vep),
+      vep_stimulus: res.vep_stimulus || "unspecified",
+      vep_amplitude_uv: orNull(res.vep_amplitude_uv),
+      vep_latency_ms: orNull(res.vep_latency_ms),
+      vep_interocular_difference_ms: orNull(res.vep_interocular_difference_ms),
+      vep_z_score: orNull(res.vep_z_score),
+      erg: orNull(res.erg),
+      erg_protocol: res.erg_protocol || "unspecified",
+      erg_z_score: orNull(res.erg_z_score),
+      eye_tracking: orNull(res.eye_tracking),
+      fixation_stability: orNull(res.fixation_stability),
+      blink_rate: orNull(res.blink_rate),
+      vergence_stability: orNull(res.vergence_stability),
+      pupil_dynamics: orNull(res.pupil_dynamics),
+      gaze_distribution: orNull(res.gaze_distribution),
       hoa_rms: orNull(res.hoa_rms), corneal_sa: orNull(res.corneal_sa),
       coma: orNull(res.coma), trefoil: orNull(res.trefoil),
       corneal_astigmatism: orNull(res.corneal_astigmatism),
@@ -437,22 +473,66 @@ function Screen1({ inp, set, setInp, adv, setA, setAdv, advOpen, setAdvOpen,
 
         <Disclosure open={resOpen} toggle={() => setResOpen(!resOpen)}
           label="Tier 3 · Research Mode"
-          note="Full CSF curve, electrophysiology, wavefront">
+          note="CSF protocol, electrophysiology, eye tracking, wavefront">
           <div className="cap cap-sm" style={{ margin: "6px 0 12px" }}>SPATIAL FREQUENCY CURVE</div>
           <div className="grid2">
-            <NumField label="Low spatial frequency CSF" unit="0–100 · optional" step="1" value={res.csf_low} onChange={setR("csf_low")} />
-            <NumField label="Mid spatial frequency CSF" unit="0–100 · optional" step="1" value={res.csf_mid} onChange={setR("csf_mid")} />
-            <NumField label="High spatial frequency CSF" unit="0–100 · optional" step="1" value={res.csf_high} onChange={setR("csf_high")} />
+            <NumField label="Low spatial frequency CSF" unit="optional" step="1" value={res.csf_low} onChange={setR("csf_low")} />
+            <NumField label="Mid spatial frequency CSF" unit="optional" step="1" value={res.csf_mid} onChange={setR("csf_mid")} />
+            <NumField label="High spatial frequency CSF" unit="optional" step="1" value={res.csf_high} onChange={setR("csf_high")} />
+            <SelectField label="Value scale" unit="what the three numbers are"
+              value={res.csf_scale} onChange={setR("csf_scale")} options={CSF_SCALES} />
+          </div>
+
+          <div className="cap cap-sm" style={{ margin: "18px 0 10px" }}>CSF TEST PROTOCOL</div>
+          <div className="grid2">
+            <TextField label="Device" unit="e.g. CSV-1000, qCSF" value={res.csf_device} onChange={setR("csf_device")} />
+            <TextField label="Test protocol" unit="e.g. photopic, mesopic" value={res.csf_test_protocol} onChange={setR("csf_test_protocol")} />
+            <NumField label="Low frequency" unit="cycles/degree" step="0.1" value={res.csf_freq_low} onChange={setR("csf_freq_low")} />
+            <NumField label="Mid frequency" unit="cycles/degree" step="0.1" value={res.csf_freq_mid} onChange={setR("csf_freq_mid")} />
+            <NumField label="High frequency" unit="cycles/degree" step="0.1" value={res.csf_freq_high} onChange={setR("csf_freq_high")} />
           </div>
           <span className="note" style={{ fontSize: 11, display: "block", marginTop: 8 }}>
-            A measured triplet overrides the Quick Fitting CSF band.
+            A measured curve overrides the Quick Fitting CSF band. Give the three
+            frequencies if you know them — AUC and slope are computed on the
+            frequency axis, so without them the engine has to assume 1.5 / 6 / 18 cpd
+            and the result is flagged as assumed.
           </span>
 
-          <div className="cap cap-sm" style={{ margin: "20px 0 12px" }}>ELECTROPHYSIOLOGY &amp; WAVEFRONT</div>
+          <div className="cap cap-sm" style={{ margin: "20px 0 12px" }}>VISUAL EVOKED POTENTIAL</div>
           <div className="grid2">
-            <NumField label="VEP" unit="optional" step="0.1" value={res.vep} onChange={setR("vep")} />
-            <NumField label="ERG" unit="optional" step="0.1" value={res.erg} onChange={setR("erg")} />
-            <NumField label="Eye tracking" unit="optional" step="0.1" value={res.eye_tracking} onChange={setR("eye_tracking")} />
+            <TextField label="Stimulus" unit="e.g. pattern-reversal 1°" value={res.vep_stimulus} onChange={setR("vep_stimulus")} />
+            <NumField label="Amplitude" unit="µV · optional" step="0.1" value={res.vep_amplitude_uv} onChange={setR("vep_amplitude_uv")} />
+            <NumField label="Latency" unit="ms · optional" step="0.1" value={res.vep_latency_ms} onChange={setR("vep_latency_ms")} />
+            <NumField label="Interocular difference" unit="ms · optional" step="0.1"
+              value={res.vep_interocular_difference_ms} onChange={setR("vep_interocular_difference_ms")} />
+            <NumField label="Normative Z-score" unit="vs. lab norms" step="0.1" value={res.vep_z_score} onChange={setR("vep_z_score")} />
+            <NumField label="VEP (unstructured)" unit="legacy · recorded only" step="0.1" pending
+              value={res.vep} onChange={setR("vep")} />
+          </div>
+          <span className="note" style={{ fontSize: 11, display: "block", marginTop: 8 }}>
+            Only the Z-score is interpretable on its own, so only it raises prediction
+            confidence. The rest is recorded for the future dataset.
+          </span>
+
+          <div className="cap cap-sm" style={{ margin: "20px 0 12px" }}>ERG &amp; EYE TRACKING</div>
+          <div className="grid2">
+            <TextField label="ERG protocol" unit="e.g. ISCEV standard" value={res.erg_protocol} onChange={setR("erg_protocol")} />
+            <NumField label="ERG Z-score" unit="vs. lab norms" step="0.1" value={res.erg_z_score} onChange={setR("erg_z_score")} />
+            <NumField label="Fixation stability" unit="arcmin · optional" step="0.5" value={res.fixation_stability} onChange={setR("fixation_stability")} />
+            <NumField label="Blink rate" unit="blinks/min · optional" step="1" value={res.blink_rate} onChange={setR("blink_rate")} />
+            <NumField label="Vergence stability" unit="0–10 · optional" step="0.5" value={res.vergence_stability} onChange={setR("vergence_stability")} />
+            <NumField label="Pupil dynamics" unit="0–10 · optional" step="0.5" pending
+              value={res.pupil_dynamics} onChange={setR("pupil_dynamics")} />
+            <NumField label="Gaze distribution" unit="0–10 · optional" step="0.5" pending
+              value={res.gaze_distribution} onChange={setR("gaze_distribution")} />
+            <NumField label="ERG (unstructured)" unit="legacy · recorded only" step="0.1" pending
+              value={res.erg} onChange={setR("erg")} />
+            <NumField label="Eye tracking (unstructured)" unit="legacy · recorded only" step="0.1" pending
+              value={res.eye_tracking} onChange={setR("eye_tracking")} />
+          </div>
+
+          <div className="cap cap-sm" style={{ margin: "20px 0 12px" }}>WAVEFRONT</div>
+          <div className="grid2">
             <NumField label="HOA RMS" unit="µm · optional" step="0.01" value={res.hoa_rms} onChange={setR("hoa_rms")} />
             <NumField label="Corneal spherical aberration" unit="µm · optional" step="0.01" value={res.corneal_sa} onChange={setR("corneal_sa")} />
             <NumField label="Coma" unit="µm · optional" step="0.01" value={res.coma} onChange={setR("coma")} />
@@ -526,6 +606,15 @@ function NumField({ label, unit, step, value, onChange, pending }) {
         {pending && <span className="pending-tag" title={PENDING_HINT}>not yet used</span>}
       </label>
       <input type="number" step={step} value={value} onChange={onChange} />
+    </div>
+  );
+}
+
+function TextField({ label, unit, value, onChange, placeholder }) {
+  return (
+    <div className="field">
+      <label>{label}{unit ? <span className="unit"> · {unit}</span> : null}</label>
+      <input type="text" value={value} onChange={onChange} placeholder={placeholder} />
     </div>
   );
 }

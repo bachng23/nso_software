@@ -1,4 +1,14 @@
-# Tài liệu tham số đầu vào — NSO AI-PC Fitting V2
+# Tài liệu tham số đầu vào — NSO AI-PC Fitting V2.1
+
+> **Cập nhật 2026-08-24 theo V2.1 Design Baseline của thầy.** Ba thay đổi lớn ảnh
+> hưởng tới cách nhập liệu:
+>
+> 1. **CSF giờ mang theo protocol** — thiết bị, tần số, thang đo. Dải Low/Mid/High
+>    chỉ còn là *fallback*, không phải phép đo.
+> 2. **VEP/ERG dạng số trần không còn làm tăng độ tin cậy.** Cần Z-score hoặc chỉ
+>    số eye tracking có thang xác định. Số trần vẫn được lưu cho dữ liệu sau này.
+> 3. **Bốn công thức cũ đã bỏ.** Tầng lâm sàng giờ xuất ra vector nhu cầu 0–1,
+>    Design Engine mới ánh xạ sang hình học ba vùng A/B/C.
 
 Mô tả **từng ô nhập liệu** trên giao diện: nó là gì, hệ thống dùng nó làm gì, và
 đi tới đâu trong chuỗi xử lý.
@@ -32,26 +42,31 @@ Về hệ số:
 
 ## Tổng quan
 
-51 ô nhập, chia 3 tầng:
+Ba tầng nhập liệu:
 
-| Tầng | Số ô | Bắt buộc | Vai trò |
-|---|---|---|---|
-| **Tier 1 — Quick Fitting** | 21 | Có | Đủ để sinh thiết kế hoàn chỉnh |
-| **Tier 2 — Advanced Clinical** | 19 | Không | Tăng độ chính xác và độ tin cậy |
-| **Tier 3 — Research Mode** | 11 | Không | Nghiên cứu, đa số chỉ tăng confidence |
+| Tầng | Bắt buộc | Vai trò |
+|---|---|---|
+| **Tier 1 — Quick Fitting** | Có | 13 ô, đủ để sinh thiết kế hoàn chỉnh |
+| **Tier 2 — Advanced Clinical** | Không | Binocular, điều tiết, thần kinh thị giác đầy đủ |
+| **Tier 3 — Research Mode** | Không | Protocol CSF, điện sinh lý, eye tracking, wavefront |
 
 Chuỗi xử lý mà mọi input đều đi qua:
 
+Bảy tầng, theo kiến trúc V2.1 của thầy:
+
 ```
 Ô nhập
-  └→ 8 chỉ số AI (0–100)
-       └→ Phenotype R/B/S/N/T          → hiện cho bác sĩ
-       └→ Tổng hợp thiết kế             → SA, vi cấu trúc  [Design IP]
-            └→ 3 candidate
-                 └→ Joint optimization OD/OS
-                      └→ Design ID + % dự báo  → hiện cho bác sĩ
-                      └→ Hình học              → gửi nhà máy  [Manufacturing IP]
+  └→ 1. Clinical phenotype      8 chỉ số + R/B/S/N/T      → hiện cho bác sĩ
+       └→ 2. Functional requirement  vector nhu cầu 0–1   ← độc lập sản phẩm
+            └→ 3. Optical target      mục tiêu D từng vùng
+                 └→ 4. Design profile  9 candidate/mắt, joint OD/OS
+                      └→ 5. Geometry projection   hai kênh riêng   [Design IP]
+                           └→ 6. Manufacturing compensation  bù HC
+                                └→ 7. Execution package    theo vendor  [Mfg IP]
 ```
+
+Hai tầng đầu **không biết tròng kính tồn tại** — đó là ranh giới cho phép đổi sang
+MR-8, PC hay kính áp tròng mà không viết lại tầng lâm sàng.
 
 ---
 
@@ -179,22 +194,21 @@ nhiều hơn".
 
 ## Section 4 — Tần số không gian
 
-### Contrast sensitivity (CSF) — dải Low/Mid/High 🟢
+### Contrast sensitivity (CSF) — dải Low/Mid/High 🟡
 
-Dropdown 3 mức.
+Dropdown 3 mức. **Đây là fallback, không phải phép đo.**
 
-**Dùng để:** quy thành một con số 0–100 rồi vào `spatial_frequency_sensitivity`,
-`neural_adaptation`, `dynamic_robustness`.
+Dùng khi chưa đo đường cong. Quy thành một số 0–100 rồi vào
+`spatial_frequency_sensitivity`, `neural_adaptation`, `dynamic_robustness`.
 
-Chỉ số CSF tác động lên **bốn** thông số thiết kế:
-- chiều cao vi cấu trúc ⚙️ `+0.6 × (1 − CSF)`
-- fill factor ⚙️ `−8.0 × (1 − CSF)`
-- spatial jitter ⚙️ `+8.0 × (1 − CSF)`
-- target MTF ⚙️ `−0.08 × (1 − CSF)`
+⚙️ Ba mức quy về **45 / 70 / 90**. Thầy yêu cầu rõ **không được ánh xạ cố định**,
+nên ba số này nằm trong config và một đường cong đo được luôn thắng.
 
-**⚙️ Cảnh báo:** ba mức quy về **45 / 70 / 90** trên thang 0–100. Thang 0–100 này
-**không phải đơn vị CSF thật** (log contrast sensitivity). Ba con số này do mình
-đặt.
+Kết quả trả về có `csf_protocol.measured = false` khi chỉ dùng dải — bác sĩ nhìn là
+biết con số đến từ ấn tượng lâm sàng chứ không phải máy đo.
+
+> Muốn CSF thật sự tham gia thiết kế thì nhập đường cong ở **Tier 3**.
+
 
 ---
 
@@ -429,42 +443,66 @@ Từ đó gián tiếp đổi SA, mật độ, jitter.
 
 # TIER 3 — Research Mode
 
-## Đường cong CSF
+## Đường cong CSF — Tier 3
 
 ### Low / Mid / High spatial frequency CSF 🟢
 
-Ba giá trị 0–100.
+Ba giá trị của đường cong. **Thắng dropdown ở Tier 1.**
 
-**Dùng để:** khi nhập **cả ba**, chúng **ghi đè** dropdown CSF band:
-📐 `csf_value = trung bình 3 giá trị`
+### Value scale 🟢
 
-Ngoài ra, nếu có Low và High thì thêm phạt độ dốc:
-⚙️ `base × (1 − 0.20 × norm(low − high, 0, 50))`
+`index_0_100` (thang cũ) hoặc `log_cs` (thứ máy báo trực tiếp).
 
-Và tính ba mô tả hiển thị cho bác sĩ:
+📐 Ghi lại thang đo là khác biệt giữa một con số so sánh được giữa các phòng khám
+và một con số không so sánh được.
 
-| Mô tả | Công thức | Tin cậy |
-|---|---|---|
-| CSF AUC | Trapezoid trên trục log tần số | 📐 toán chuẩn |
-| CSF slope | `(high − low) / log-span` | 📐 toán chuẩn |
-| Sensitivity centroid | Trọng tâm khối nhạy cảm | 📐 toán chuẩn |
+### Device / Test protocol 🟣
 
-**⚙️ Cảnh báo nặng:** ba giá trị được đặt ở tần số **1.5 / 6 / 18 cpd**. Máy đo
-CSF của phòng khám dùng tần số nào — **chưa ai xác nhận**. Đổi tần số là AUC và
-slope sai hết.
+Chỉ để truy vết — không đi vào tính toán. Nhưng nó theo phép đo vào cơ sở dữ liệu,
+nên sau này biết số liệu đến từ máy nào.
 
-Ngoài ra chuẩn hoá AUC "về 0–100 so với đường phẳng 100" là quy ước mình đặt cho
-số đọc dễ, **không phải định nghĩa AUC chuẩn của CSF**.
+### Low / Mid / High frequency (cycles/degree) 🟢
+
+**Tần số thật của máy.** Nếu bỏ trống, hệ thống giả định 1.5 / 6 / 18 cpd và **đánh
+dấu `frequencies_assumed: true`** — giả định đi theo dữ liệu chứ không nấp trong code.
+
+📐 AUC và slope tính trên trục log tần số, nên nhập sai tần số là sai cả hai. Slope
+lại điều khiển phạt roll-off, nên tần số **thật sự tới được thiết kế**.
+
+Cùng một đường cong, đo ở `[3,6,12]` và `[1,4,16]` cpd cho slope khác nhau — đúng
+như phải thế.
 
 ## Điện sinh lý & wavefront
 
-### VEP / ERG / Eye tracking 🟡
+### VEP — stimulus, amplitude, latency, interocular difference, Z-score
 
-**⚠️ Vẫn chỉ tăng confidence.** Lý do khác với nhóm wavefront: **không biết đơn vị**.
-VEP là biên độ hay độ trễ? Thang nào? Không thể nối một đại lượng mà mình không
-biết chiều tăng của nó nghĩa là gì.
+**Chỉ `vep_z_score` làm tăng độ tin cậy** 🟢. Bốn trường còn lại 🟡 được ghi lại cho
+dữ liệu huấn luyện sau này.
 
-**Cần thầy cho biết:** đo bằng thiết bị gì, đơn vị gì, giá trị nào là bình thường.
+Lý do, theo đúng lời thầy: *"confidence should not be mechanically increased simply
+because a VEP test was performed."* Một con số trần không có stimulus, đơn vị hay
+mốc tham chiếu — **nó là bản ghi, không phải bằng chứng**.
+
+| Nhập gì | Confidence |
+|---|---|
+| không gì | 75 |
+| `vep = 1.5` (số trần) | **75** — ghi lại, không tính |
+| `vep_z_score = −1.2` | 80 |
+
+Kết quả mang `neurovisual_status`: `not_recorded` / `recorded_not_interpretable` /
+`interpretable` — bác sĩ đã đo VEP thì xứng đáng biết cái nào đã xảy ra.
+
+### ERG — protocol + Z-score
+
+Như VEP: chỉ `erg_z_score` được tính.
+
+### Eye tracking — năm chỉ số con
+
+🟢 `fixation_stability` · `blink_rate` · `vergence_stability`
+🟡 `pupil_dynamics` · `gaze_distribution` (ghi lại, chưa dùng)
+
+Thầy nhận định đây là **nhóm có tiềm năng vào optimizer sớm nhất**. Cả năm đã là
+feature, sẵn dữ liệu cho lúc đó.
 
 ### HOA RMS / Coma / Trefoil 🟢
 

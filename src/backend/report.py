@@ -134,7 +134,7 @@ _INDEX_LABELS = [
 ]
 
 _PREDICTED_LABELS = [
-    ("myopia_control", "Predicted myopia control"),
+    ("nso_control_score", "NSO Control Score (relative)"),
     ("visual_comfort", "Predicted visual comfort"),
     ("adaptation", "Predicted adaptation"),
     ("binocular_compatibility", "Predicted binocular compatibility"),

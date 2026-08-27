@@ -33,10 +33,13 @@ class EngineConfig:
     version: str = "rule-1.0.0"
 
     # -- Clinical scales (ASSUMPTIONS P1-3, P1-4) --------------------------
+    # FALLBACK ONLY. Used when no curve was measured. The V2.1 baseline is
+    # explicit that this must not harden into a permanent mapping: a measured
+    # curve always wins, and these numbers are configurable so a clinic can
+    # align them with its own instrument.
     csf_bands: Dict[str, float] = field(
         default_factory=lambda: {"Low": 45.0, "Mid": 70.0, "High": 90.0}
     )
-    csf_frequencies_cpd: Tuple[float, ...] = (1.5, 6.0, 18.0)
 
     # -- Binocular vision --------------------------------------------------
     #
@@ -57,16 +60,75 @@ class EngineConfig:
     stereoacuity_normal_arcsec: float = 40.0
     stereoacuity_poor_arcsec: float = 400.0
 
-    # Direction matters for the DESIGN, not only for the strain: a peripheral
-    # add reduces accommodative convergence, which relieves an esophore at near
-    # and worsens an exophore. So the same magnitude of phoria should push the
-    # design in opposite directions depending on its sign.
+    # Binocular status enters the OPTIMIZER, not the optical target.
     #
-    # !! SET TO ZERO PENDING CLINICAL SIGN-OFF !!
-    # The direction above is textbook; the magnitude is not something to invent.
-    # The path is wired and tested so that entering a number here is the whole
-    # change -- ASSUMPTIONS P1-18.
-    sa_vergence_direction_gain: float = 0.0
+    # An earlier version let phoria modify SA directly ("3 prism dioptres eso
+    # -> SA +0.xx D"). The supervisor's V2.1 note rejects that shape: phoria
+    # should weight the cost function instead, so that
+    #
+    #     J = w_C*C - w_V*V - w_D*D - w_B*B
+    #
+    # and only w_B needs recalibrating once clinical data arrive. The optical
+    # engine does not have to be overturned to absorb a binocular finding.
+    #
+    # This is the strength of the binocular penalty for a patient with maximum
+    # binocular load, relative to one with none.
+    binocular_weight_load_gain: float = 1.0
+
+    # -- NSO three-zone architecture --------------------------------------
+    #
+    # GIVEN BY THE SUPERVISOR (V2.1 baseline). These are the first real numbers
+    # in this file: everything else marked below is still a placeholder.
+    #
+    # Reference geometry per zone, centre outward. Zone C elements are
+    # elongated (32 x 16 um), the others round.
+    zone_reference_geometry: Dict[str, Dict[str, float]] = field(
+        default_factory=lambda: {
+            "A": {"diameter_um": 22.0, "length_um": 22.0, "height_um": 2.2, "fill_factor_pct": 38.0},
+            "B": {"diameter_um": 28.0, "length_um": 28.0, "height_um": 1.5, "fill_factor_pct": 35.0},
+            "C": {"diameter_um": 32.0, "length_um": 16.0, "height_um": 1.0, "fill_factor_pct": 28.0},
+        }
+    )
+
+    # Nominal add target per zone for each profile tier -- the numbers behind
+    # the "1-3-2D" / "3-5-4D" / "5-8-6D" labels. GIVEN BY THE SUPERVISOR.
+    #
+    # These are OPTICAL TARGETS. They are not surface heights, and converting
+    # one straight into the other is the error the V2.1 note calls out.
+    zone_optical_targets_d: Dict[str, Dict[str, float]] = field(
+        default_factory=lambda: {
+            "Low":    {"A": 1.0, "B": 3.0, "C": 2.0},
+            "Medium": {"A": 3.0, "B": 5.0, "C": 4.0},
+            "High":   {"A": 5.0, "B": 8.0, "C": 6.0},
+        }
+    )
+
+    # Which tier the reference geometry above corresponds to. Zone geometry is
+    # scaled relative to this tier's targets.
+    zone_reference_tier: str = "Medium"
+
+    # Temporal sector modulation, percent. GIVEN as a 25-35% range; the
+    # midpoint is used until there is a reason to pick within it.
+    temporal_modulation_pct: float = 30.0
+
+    # ASSUMPTIONS P1-21: the radial boundaries of zones A/B/C were NOT
+    # specified. These split the functional optical zone into three annuli and
+    # are placeholders -- the zone widths are a lens-design decision.
+    zone_boundaries_mm: Tuple[float, ...] = (0.0, 4.0, 9.0, 16.0)
+
+    # ASSUMPTIONS P1-21: how zone geometry scales when the profile's optical
+    # target departs from the reference tier. Height carries the modulation
+    # depth, so it takes most of the scaling; diameter and fill factor move
+    # less. All three are interpolations between the supervisor's reference
+    # row and nothing else -- they are not measured.
+    zone_height_target_exponent: float = 1.0
+    zone_fill_target_exponent: float = 0.35
+    zone_diameter_target_exponent: float = 0.15
+    # Manufacturable bounds, so scaling cannot produce an impossible structure.
+    zone_height_min_um: float = 0.4
+    zone_height_max_um: float = 4.0
+    zone_fill_min_pct: float = 12.0
+    zone_fill_max_pct: float = 55.0
 
     # -- Wavefront and corneal shape --------------------------------------
     #
@@ -75,27 +137,35 @@ class EngineConfig:
     # aberration does not need as much added, and one whose retinal image is
     # already degraded by coma or trefoil tolerates less extra optical load.
     #
-    # Both directions are optics, not opinion. The MAGNITUDES are not something
-    # to invent -- adding the wrong amount of SA is worse than adding none --
-    # so every gain below ships at zero. The paths are wired and tested; filling
-    # in a number is the whole change (ASSUMPTIONS P1-19).
+    # BOUNDED MODIFIERS, per the supervisor's V2.1 guidance. These are no
+    # longer zero, and no longer fixed dioptric coefficients either:
     #
+    #     "Use bounded modifiers first to avoid false precision."
+    #
+    # Each one scales the normalized demand vector by a few percent. That shape
+    # matters -- a modifier cannot produce a design outside the range the
+    # reference geometry came from, whereas a dioptric coefficient can.
+    #
+    # The ranges below are the ones given; the value chosen inside each range
+    # is the midpoint, which is still an interpolation (ASSUMPTIONS P1-19).
+
     # Reference corneal SA for an average eye, micrometres over a 6 mm pupil.
     corneal_sa_reference_um: float = 0.27
-    # How much of the eye's own SA departure is subtracted from the lens SA.
-    # 1.0 would mean full compensation.
-    sa_corneal_compensation: float = 0.0
-    # How much residual higher-order aberration caps the added optical load.
-    sa_hoa_tolerance_gain: float = 0.0
+    # GIVEN: 25-50%, never 100%. Corneal SA is not whole-eye SA -- the
+    # crystalline lens compensates part of it -- so full subtraction would
+    # over-correct.
+    sa_corneal_compensation: float = 0.35
+    # GIVEN: high HOA should reduce maximum modulation by about 10-20%.
+    sa_hoa_tolerance_gain: float = 0.15
     # Residual (lenticular) astigmatism = refractive cylinder - corneal
     # cylinder. It degrades the retinal image the design has to work with.
-    hoa_residual_astigmatism_weight: float = 0.0
-    # Corneal asphericity sets the eye's own peripheral defocus profile, which
-    # the lens is meant to complement rather than duplicate.
+    hoa_residual_astigmatism_weight: float = 0.25
+    # GIVEN: corneal Q / asphericity is a secondary modifier at +/-5-10%.
     corneal_eccentricity_reference: float = 0.5
-    sa_corneal_asphericity_gain: float = 0.0
-    # Ocular dominance shifts the OD/OS split: the dominant eye may warrant the
-    # gentler design. Direction plausible, magnitude unknown.
+    sa_corneal_asphericity_gain: float = 0.075
+    # Ocular dominance was NOT covered by the V2.1 guidance and stays at zero:
+    # there is no established rule, and inventing one would undo the point of
+    # bounded modifiers.
     dominance_asymmetry_gain: float = 0.0
 
     # -- Accommodative demand from working distance -----------------------
@@ -125,12 +195,22 @@ class EngineConfig:
     # The grid is the cross product, so 3 x 3 = 9 candidates per eye and 81
     # pairs to score. ASSUMPTIONS P3-4: the step sizes are uncalibrated.
     candidate_offsets: Tuple[float, ...] = (-1.0, 0.0, 1.0)          # SA, dioptres
-    candidate_density_offsets: Tuple[float, ...] = (-15.0, 0.0, 15.0)  # density, 0-100
+    # Fill-factor offsets, percentage points. Kept narrow on purpose: the
+    # supervisor's reference coverage is 28-38%, and a wide sweep would explore
+    # geometry outside the range those numbers came from.
+    candidate_density_offsets: Tuple[float, ...] = (-6.0, 0.0, 6.0)
 
     # -- Joint binocular optimization (P0-6) ------------------------------
     binocular_weight: float = 0.30
     sa_fusion_tolerance_d: float = 0.4
-    density_fusion_tolerance: float = 12.0
+    # Interocular coverage difference the eyes tolerate, PERCENTAGE POINTS.
+    # Previously 12.0, which was a tolerance for areal density in elements per
+    # mm^2 -- hundreds -- and was left behind when the compared quantity became
+    # fill factor. Against a 20-50% fill factor a tolerance of 12 pp swallowed
+    # almost any asymmetry, so the binocular penalty had effectively stopped
+    # working. ASSUMPTIONS P0-6: the value itself is still uncalibrated.
+    fill_fusion_tolerance_pct: float = 4.0
+    fill_fusion_span_pct: float = 25.0
     # Pair classification. mild_sa_ceiling is the boundary between "mildly
     # asymmetric" and "asymmetric"; the symmetric boundary reuses the fusion
     # tolerances above so the label and the optimizer cannot disagree (P2-4).
@@ -210,9 +290,15 @@ class EngineConfig:
 
     # -- Lens construction (P0-1) — PLACEHOLDERS, NOT THE REAL PRODUCT -----
     lens_index: float = 1.60
-    optic_zone_diameter_mm: float = 40.0
+    # 65 mm blank, i.e. r = 0 -> 32.5 mm. Given by the supervisor in the V2.1
+    # baseline; previously a 40 mm placeholder.
+    optic_zone_diameter_mm: float = 65.0
     base_curve_d: float = 4.0
     sa_reference_semi_diameter_mm: float = 10.0
+    # Spherical aberration of the BACK SURFACE, dioptres. A property of the
+    # surface, never derived from the NSO microstructure modulation -- see
+    # nso/recipe.py for why that distinction exists. Zero until specified.
+    base_surface_aspheric_sa_d: float = 0.0
     # Width over which the higher-order term blends into its plateau. The
     # blend replaces a hard clamp that was C0- but not C2-continuous, i.e. it
     # put a curvature step -- an optical defect ring -- at the reference
@@ -224,6 +310,18 @@ class EngineConfig:
     surface_radial_samples: int = 41
     surface_meridional_samples: int = 24
     microstructure_page_size: int = 2000
+
+    # -- Process transfer (P1-22) — PLACEHOLDERS ---------------------------
+    #
+    # What survives the process. The one datum available is the supervisor's
+    # observation that hard coat takes a nominal 3.0 um structure down to about
+    # 1.8 um, i.e. a retention of 0.6. Everything else here is invented, and
+    # even the 0.6 is a single reported figure rather than a measured curve.
+    process_transfer_name: str = "hard-coat (uncalibrated)"
+    process_height_retention: float = 0.6
+    process_diameter_growth: float = 0.05
+    process_fill_factor_growth: float = 0.08
+    process_minimum_height_um: float = 0.3
 
     # -- Acceptance windows (P0-4) — PLACEHOLDERS --------------------------
     sag_tolerance_mm: float = 0.002

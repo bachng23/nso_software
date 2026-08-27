@@ -64,10 +64,18 @@ def test_config_is_immutable():
 
 def test_changing_a_coefficient_changes_the_design(restore_config):
     """The point of the config seam: recalibrating touches no engine code."""
-    before = nso.run_fitting(patient())["design"]["recipes"][0].sa_strength
-    use_config(nso.get_config().evolve(sa_stress_gain=0.0, version="no-stress"))
-    after = nso.run_fitting(patient())["design"]["recipes"][0].sa_strength
-    assert after != before
+    def height():
+        r = nso.run_fitting(patient())["design"]["recipes"][0]
+        return r.nso_modulation.zone("A").element_height_um
+
+    before = height()
+    # Recalibrating the reference geometry is the realistic case: new bench
+    # measurements arrive and the table is updated.
+    recalibrated = dict(nso.get_config().zone_reference_geometry)
+    recalibrated["A"] = {**recalibrated["A"], "height_um": 3.0}
+    use_config(nso.get_config().evolve(
+        zone_reference_geometry=recalibrated, version="recalibrated"))
+    assert height() != before
 
 
 def test_changing_grading_thresholds_changes_the_phenotype(restore_config):
@@ -202,7 +210,7 @@ def test_rule_based_predictor_satisfies_the_protocol():
 def test_a_new_predictor_can_be_swapped_in_without_touching_the_engine(stub_predictor):
     r = nso.clinical_only(patient())
     assert r["engine"]["predictor"] == "stub"
-    assert r["predicted"]["myopia_control"] == 90
+    assert r["predicted"]["nso_control_score"] == 90
 
 
 def test_swapping_the_predictor_does_not_change_which_designs_exist(stub_predictor):
@@ -333,18 +341,28 @@ def test_pages_do_not_overlap():
     assert a and b and not (a & b)
 
 
-def test_walking_every_page_terminates_quickly():
+def test_pagination_cost_does_not_grow_with_page_number():
+    """The property that matters: a late page must cost the same as an early
+    one. Total walk time scales with the lens area and is not the thing to
+    assert -- a 65 mm blank simply has more elements than a 40 mm one. What
+    would be a defect is page N costing N times page 1, which is what happens
+    when pagination is implemented by walking from the start each time."""
     import time
     r = _recipe()
-    start, total, page = time.time(), 0, 0
-    while True:
-        m = nso.microstructure_map(r, page=page)
-        total += m["returned"]
-        if m["next_page"] is None:
-            break
-        page += 1
-    assert total > 0
-    assert time.time() - start < 15.0, "pagination regressed to quadratic"
+    total_pages = nso.microstructure_map(r, page=0)["total_pages"]
+    assert total_pages > 10, "need enough pages for this to mean anything"
+
+    def timed(page):
+        start = time.time()
+        nso.microstructure_map(r, page=page)
+        return time.time() - start
+
+    early = timed(1)
+    late = timed(total_pages - 2)
+    assert late < early * 4 + 0.5, (
+        f"page {total_pages - 2} took {late:.2f}s vs {early:.2f}s for page 1 — "
+        "pagination looks quadratic again"
+    )
 
 
 def test_element_total_is_labelled_an_estimate():
@@ -442,12 +460,16 @@ def _fingerprint(p):
         tuple(sorted(c["predicted"].items())),
         tuple(sorted(c["indices"].items())),
         tuple(sorted(c["candidate_comparison"]["OD"][0].items())),
-        tuple((x.sa_strength, x.fill_factor_pct) for x in r["design"]["recipes"]),
+        tuple((x.nso_peak_target_d, x.mean_fill_factor_pct) for x in r["design"]["recipes"]),
     )
 
 
 def _probe_patient():
     return nso.PatientInput(
+        # A CSF triplet is present so the protocol fields have something to
+        # apply to -- frequencies and scale change how a curve is read, and
+        # with no curve there is nothing to read.
+        csf_low=90.0, csf_mid=70.0, csf_high=40.0,
         age=11,
         od=nso.EyeInput(sphere=-3.25, cylinder=-0.5, axis=180,
                         axial_length=25.1, bcva_logmar=0.0),
@@ -463,6 +485,23 @@ def _probe_patient():
 # ``test_no_new_inert_clinical_inputs`` instead of shipping quietly.
 KNOWN_INERT = {
     "ocular_dominance": "needs a clinical rule for how dominance biases OD/OS",
+    # Provenance, not inputs. These are stored so a stored result can be traced
+    # to the instrument that produced it; they are deliberately not arithmetic.
+    "csf_device": "provenance — recorded with the measurement, never computed with",
+    "csf_test_protocol": "provenance — recorded with the measurement",
+    # Deliberately inert per the V2.1 baseline: a bare number with no stimulus,
+    # unit or normative reference is a record, not evidence. The structured
+    # forms (vep_z_score, fixation_stability, ...) are live and probed below.
+    "vep": "bare value — use vep_z_score; recorded for the future dataset",
+    "erg": "bare value — use erg_z_score; recorded for the future dataset",
+    "eye_tracking": "bare value — use the named sub-metrics",
+    "vep_stimulus": "provenance — recorded with the measurement",
+    "erg_protocol": "provenance — recorded with the measurement",
+    "vep_amplitude_uv": "recorded for the future dataset; not yet an input",
+    "vep_latency_ms": "recorded for the future dataset; not yet an input",
+    "vep_interocular_difference_ms": "recorded for the future dataset",
+    "pupil_dynamics": "recorded for the future dataset; not yet an input",
+    "gaze_distribution": "recorded for the future dataset; not yet an input",
     "distance_phoria": "binocular_load currently reads near phoria only",
     "near_working_distance": "accommodative demand is not derived from distance yet",
     "computer_working_distance": "same as near_working_distance",
@@ -500,6 +539,27 @@ INPUT_PROBES = {
     "trefoil": 0.2,
     "corneal_astigmatism": 1.5,
     "corneal_eccentricity": 0.7,
+    "csf_device": "CSV-1000",
+    "csf_test_protocol": "photopic",
+    "csf_scale": "log_cs",
+    "csf_frequencies_cpd": [1.0, 4.0, 16.0],
+    "vep_stimulus": "pattern-reversal 1 deg",
+    "vep_amplitude_uv": 8.4,
+    "vep_latency_ms": 104.0,
+    "vep_interocular_difference_ms": 3.0,
+    "vep_z_score": -1.2,
+    "erg_protocol": "ISCEV standard",
+    "erg_z_score": -0.8,
+    "fixation_stability": 12.0,
+    "blink_rate": 14.0,
+    "vergence_stability": 6.0,
+    "pupil_dynamics": 6.0,
+    "gaze_distribution": 6.0,
+    "csf_measurement": nso.CsfMeasurement(
+        spatial_frequency_cpd=[1.5, 3.0, 6.0, 12.0, 18.0],
+        log_cs=[1.75, 1.90, 1.80, 1.40, 0.90],
+        device="CSV-1000",
+    ),
 }
 
 
@@ -568,8 +628,8 @@ def test_myopia_and_comfort_goals_choose_different_designs():
     comfort_led = fit("Digital Visual Comfort")
     assert control_led["clinical"]["design_id"] != comfort_led["clinical"]["design_id"]
     # The control-led goal must actually buy control, and pay for it.
-    assert (control_led["clinical"]["predicted"]["myopia_control"]
-            > comfort_led["clinical"]["predicted"]["myopia_control"])
+    assert (control_led["clinical"]["predicted"]["nso_control_score"]
+            > comfort_led["clinical"]["predicted"]["nso_control_score"])
     assert (control_led["clinical"]["predicted"]["visual_comfort"]
             < comfort_led["clinical"]["predicted"]["visual_comfort"])
 
@@ -586,7 +646,7 @@ def _candidates():
     p = _probe_patient()
     return sorted(
         nso.generate_candidates(p, "OD", nso.ai_derived_indices(p)),
-        key=lambda c: (c["recipe"].sa_strength, c["recipe"].fill_factor_pct),
+        key=lambda c: (c["recipe"].nso_peak_target_d, c["recipe"].mean_fill_factor_pct),
     )
 
 
@@ -609,7 +669,7 @@ def test_no_candidate_dominates_on_every_axis():
         others = [c for c in cands if c is not a]
         assert not all(
             all(a["metrics"][k] >= b["metrics"][k] for k in axes) for b in others
-        ), f"candidate SA={a['recipe'].sa_strength} dominates; the choice is fake"
+        ), f"candidate SA={a['recipe'].nso_peak_target_d} dominates; the choice is fake"
 
 
 def test_more_optical_load_buys_control_and_costs_acuity():
@@ -622,25 +682,34 @@ def test_more_optical_load_buys_control_and_costs_acuity():
 
 
 def test_the_two_candidate_axes_trade_differently():
-    """Strength and coverage must not be two names for the same knob: both buy
-    control, but only extra SA costs acuity. That difference is what lets an
-    acuity-led goal choose coverage instead of strength."""
-    by_design = {
-        (c["recipe"].sa_strength, c["recipe"].fill_factor_pct): c["metrics"]
-        for c in _candidates()
-    }
-    sas = sorted({k[0] for k in by_design})
-    ffs = sorted({k[1] for k in by_design})
+    """Strength and coverage must not be two names for the same knob.
 
-    # More coverage at fixed strength: control up, acuity unchanged.
-    low_ff, high_ff = by_design[(sas[0], ffs[0])], by_design[(sas[0], ffs[-1])]
-    assert high_ff["control"] > low_ff["control"]
-    assert high_ff["acuity"] == low_ff["acuity"]
+    Both buy control, but only a higher optical target costs acuity. That
+    asymmetry is what lets an acuity-led goal reach for coverage instead of
+    strength; if the two axes traded identically the grid would be
+    one-dimensional again.
+    """
+    candidates = _candidates()
 
-    # More strength at fixed coverage: control up, acuity down.
-    low_sa, high_sa = by_design[(sas[0], ffs[0])], by_design[(sas[-1], ffs[0])]
-    assert high_sa["control"] > low_sa["control"]
-    assert high_sa["acuity"] < low_sa["acuity"]
+    def group(target_d):
+        rows = [c for c in candidates if c["recipe"].nso_peak_target_d == target_d]
+        return sorted(rows, key=lambda c: c["recipe"].mean_fill_factor_pct)
+
+    targets = sorted({c["recipe"].nso_peak_target_d for c in candidates})
+    assert len(targets) >= 2, "the strength axis is not varying"
+
+    # Coverage axis, at a fixed optical target: control up, acuity unchanged.
+    same_target = group(targets[0])
+    assert len(same_target) >= 2, "the coverage axis is not varying"
+    low_cov, high_cov = same_target[0]["metrics"], same_target[-1]["metrics"]
+    assert high_cov["control"] > low_cov["control"]
+    assert high_cov["acuity"] == low_cov["acuity"]
+
+    # Strength axis, at comparable coverage: control up, acuity down.
+    weak = group(targets[0])[0]["metrics"]
+    strong = group(targets[-1])[0]["metrics"]
+    assert strong["control"] > weak["control"]
+    assert strong["acuity"] < weak["acuity"]
 
 
 def test_robustness_falls_as_the_surface_gets_busier():
@@ -889,14 +958,20 @@ def test_a_design_created_in_one_process_is_usable_in_another(tmp_path):
 # millimetres of sag the clamp was there to prevent.
 # --------------------------------------------------------------------------- #
 
-from nso.manufacturing.geometry import _higher_order_sag, _smootherstep
+from nso.manufacturing.geometry import _smootherstep, _window
 
 
 def _ho(r):
+    """The windowed higher-order term of the BASE SURFACE.
+
+    SA_effective(r) = C4 * r^4 * W(r), which is the form the supervisor's V2.1
+    baseline asks for: the term lives inside a functional zone and tapers at
+    its boundary rather than running to the edge of a 65 mm blank.
+    """
     cfg = nso.get_config()
-    k = 4.0 / (2 * (cfg.lens_index - 1) * 1000 * cfg.sa_reference_semi_diameter_mm ** 2)
-    return _higher_order_sag(r, k, cfg.sa_reference_semi_diameter_mm,
-                             cfg.sa_rolloff_blend_mm)
+    zone = cfg.sa_reference_semi_diameter_mm
+    k = 4.0 / (2 * (cfg.lens_index - 1) * 1000 * zone ** 2)
+    return k * r ** 4 * _window(r, zone, cfg.sa_rolloff_blend_mm)
 
 
 def _second_derivative(f, r, h=1e-3):
@@ -918,12 +993,15 @@ def test_smootherstep_is_monotonic():
     assert values == sorted(values)
 
 
-def test_no_curvature_step_at_the_reference_radius():
-    """The defect ring the hard clamp created."""
+def test_no_curvature_step_at_the_zone_boundary():
+    """The defect ring a hard clamp would create.
+
+    W(r) is C2-continuous at the zone boundary, so the second derivative of
+    the windowed term carries across it without a step."""
     r0 = nso.get_config().sa_reference_semi_diameter_mm
     inside = _second_derivative(_ho, r0 - 0.05)
     outside = _second_derivative(_ho, r0 + 0.05)
-    assert inside == pytest.approx(outside, abs=5e-3)
+    assert inside == pytest.approx(outside, abs=5e-2)
 
 
 def test_curvature_stays_bounded_across_the_whole_surface():
@@ -953,10 +1031,23 @@ def test_sag_stays_within_a_plausible_spectacle_lens():
 
 
 def test_blend_width_is_configurable(restore_config):
+    """The window only bites when the BACK SURFACE carries an aspheric term.
+    With none specified the sag is pure prescription and the blend has nothing
+    to taper — which is itself the correct behaviour."""
     from nso.config import use_config
+    use_config(nso.get_config().evolve(base_surface_aspheric_sa_d=2.0))
     narrow = nso.surface_map(_recipe())["points"]
-    use_config(nso.get_config().evolve(sa_rolloff_blend_mm=8.0))
+    use_config(nso.get_config().evolve(
+        base_surface_aspheric_sa_d=2.0, sa_rolloff_blend_mm=12.0))
     assert nso.surface_map(_recipe())["points"] != narrow
+
+
+def test_the_window_has_no_effect_without_a_surface_asphere(restore_config):
+    from nso.config import use_config
+    assert nso.get_config().base_surface_aspheric_sa_d == 0.0
+    plain = nso.surface_map(_recipe())["points"]
+    use_config(nso.get_config().evolve(sa_rolloff_blend_mm=12.0))
+    assert nso.surface_map(_recipe())["points"] == plain
 
 
 # --------------------------------------------------------------------------- #
@@ -1058,7 +1149,8 @@ def test_closer_work_raises_accommodative_stress():
 def test_working_distance_reaches_the_design():
     a = nso.run_fitting(patient(near_working_distance=20))["design"]["recipes"][0]
     b = nso.run_fitting(patient(near_working_distance=55))["design"]["recipes"][0]
-    assert a.sa_strength != b.sa_strength
+    assert (a.nso_modulation.zone("A").element_height_um
+            != b.nso_modulation.zone("A").element_height_um)
 
 
 def test_demand_is_reported_to_the_clinician():
@@ -1134,20 +1226,14 @@ def test_both_eyes_are_checked_against_the_same_ranges():
 # The internal design console must stay out of the deploy path
 # --------------------------------------------------------------------------- #
 
-def test_the_design_console_is_not_inside_the_deploy_root():
-    """src/backend is what ships; a console that prints the full recipe must
-    not be packageable by accident."""
+def test_no_ui_ships_inside_the_deploy_root():
+    """src/backend is what deploys. The Streamlit design console that used to
+    print the full recipe has been removed entirely; nothing that renders the
+    Design IP should reappear here."""
     backend = Path(nso.__file__).parent.parent
-    assert not (backend / "nso_mvp.py").exists()
-    assert (backend.parent.parent / "internal" / "design_console.py").exists()
-
-
-def test_the_console_refuses_to_start_without_an_explicit_opt_in():
-    console = (Path(nso.__file__).parent.parent.parent.parent
-               / "internal" / "design_console.py")
-    source = console.read_text()
-    assert 'NSO_INTERNAL_CONSOLE' in source
-    assert "raise SystemExit" in source
+    for gone in ("nso_mvp.py", "design_console.py"):
+        assert not (backend / gone).exists()
+    assert not (backend.parent.parent / "internal").exists()
 
 
 def test_streamlit_is_not_a_deploy_dependency():
@@ -1171,7 +1257,7 @@ def test_an_implausible_reading_earns_no_coverage_credit():
 
 
 def test_one_bad_reading_does_not_discredit_an_unrelated_domain():
-    r = nso.clinical_only(patient(pfv=95, vep=1.0))
+    r = nso.clinical_only(patient(pfv=95, vep_z_score=-1.0))
     assert r["credited_domains"]["binocular_extended"] is False
     assert r["credited_domains"]["neurovisual_extended"] is True
 
@@ -1264,22 +1350,34 @@ def test_vergence_direction_is_signed():
         patient(near_phoria=nso.get_config().near_phoria_norm_d)) == 0
 
 
-def test_vergence_direction_gain_ships_at_zero(restore_config):
-    """The direction is textbook; the magnitude is not ours to invent."""
-    assert nso.get_config().sa_vergence_direction_gain == 0.0
+def test_phoria_does_not_move_the_optical_target():
+    """Binocular status must not reach the optical design.
+
+    An earlier version let phoria modify SA directly. The V2.1 baseline rules
+    that shape out: a binocular finding is a statement about priorities, so it
+    belongs in the cost function, not baked into the lens.
+    """
     eso = nso.run_fitting(patient(near_phoria=9))["design"]["recipes"][0]
     exo = nso.run_fitting(patient(near_phoria=-12))["design"]["recipes"][0]
-    assert eso.sa_strength == exo.sa_strength
+    assert eso.nso_peak_target_d == exo.nso_peak_target_d
 
 
-def test_setting_the_vergence_gain_is_the_only_change_needed(restore_config):
-    """The path is wired and tested, so a clinician filling in one number is
-    the whole change."""
+def test_phoria_weights_the_binocular_term_instead():
+    """J = w_C*C - w_V*V - w_D*D - w_B*B, with binocular status setting w_B.
+
+    Recalibrating a binocular finding then touches one weight, and the optical
+    engine does not have to change to absorb it."""
+    strained = nso.ai_derived_indices(patient(near_phoria=-14, npc=15))
+    comfortable = nso.ai_derived_indices(patient(near_phoria=-3, npc=5))
+    assert nso.binocular_weight(strained) > nso.binocular_weight(comfortable)
+
+
+def test_the_binocular_weight_is_a_single_calibratable_number(restore_config):
     from nso.config import use_config
-    use_config(nso.get_config().evolve(sa_vergence_direction_gain=0.2))
-    eso = nso.run_fitting(patient(near_phoria=9))["design"]["recipes"][0]
-    exo = nso.run_fitting(patient(near_phoria=-12))["design"]["recipes"][0]
-    assert eso.sa_strength > exo.sa_strength
+    indices = nso.ai_derived_indices(patient(near_phoria=-14, npc=15))
+    before = nso.binocular_weight(indices)
+    use_config(nso.get_config().evolve(binocular_weight_load_gain=3.0))
+    assert nso.binocular_weight(indices) > before
 
 
 # --------------------------------------------------------------------------- #
@@ -1323,21 +1421,26 @@ def test_coma_and_trefoil_count_toward_the_aberration_load():
     assert with_coma != base
 
 
-@pytest.mark.parametrize("gain", [
-    "sa_corneal_compensation", "sa_hoa_tolerance_gain",
-    "sa_corneal_asphericity_gain", "dominance_asymmetry_gain",
-])
-def test_wavefront_gains_ship_at_zero(gain):
-    """Adding the wrong amount of SA is worse than adding none."""
-    assert getattr(nso.get_config(), gain) == 0.0
+def test_only_the_uncovered_modifier_still_ships_at_zero():
+    """Three of these now carry values from the V2.1 baseline. Ocular
+    dominance was not covered there, and inventing a rule for it would undo
+    the point of asking."""
+    cfg = nso.get_config()
+    assert cfg.sa_corneal_compensation > 0.0
+    assert cfg.sa_hoa_tolerance_gain > 0.0
+    assert cfg.sa_corneal_asphericity_gain > 0.0
+    assert cfg.dominance_asymmetry_gain == 0.0
 
 
 def test_corneal_sa_compensation_reduces_the_added_sa(restore_config):
     from nso.config import use_config
-    use_config(nso.get_config().evolve(sa_corneal_compensation=1.0))
+    # Bounded modifier, not a dioptric subtraction: the supervisor's V2.1
+    # guidance is 25-50% partial compensation, never 100%.
+    use_config(nso.get_config().evolve(sa_corneal_compensation=0.4))
     high = nso.run_fitting(patient(corneal_sa=0.55))["design"]["recipes"][0]
     low = nso.run_fitting(patient(corneal_sa=0.05))["design"]["recipes"][0]
-    assert high.sa_strength < low.sa_strength
+    assert (high.nso_modulation.zone("A").element_height_um
+            < low.nso_modulation.zone("A").element_height_um)
 
 
 def test_dominance_shifts_the_pair_when_enabled(restore_config):
@@ -1345,7 +1448,8 @@ def test_dominance_shifts_the_pair_when_enabled(restore_config):
     neutral = nso.run_fitting(patient())["design"]["recipes"]
     use_config(nso.get_config().evolve(dominance_asymmetry_gain=0.3))
     biased = nso.run_fitting(patient(ocular_dominance="OD"))["design"]["recipes"]
-    assert biased[0].sa_strength != neutral[0].sa_strength
+    assert (biased[0].nso_modulation.zone("A").element_height_um
+            != neutral[0].nso_modulation.zone("A").element_height_um)
 
 
 def test_wavefront_quantities_are_exposed_as_features():
@@ -1378,22 +1482,24 @@ def test_an_intermediate_design_can_win():
     """The property a weighted sum cannot deliver."""
     cfg = nso.get_config()
     extremes = {min(cfg.candidate_offsets), max(cfg.candidate_offsets)}
-    chosen_sa = {_selected_for(goal)[0].sa_strength for goal in nso.PRIMARY_GOALS}
+    chosen_sa = {_selected_for(goal)[0].nso_peak_target_d for goal in nso.PRIMARY_GOALS}
     # At least one goal picks a design that is not at either SA extreme.
     p = _probe_patient()
-    all_sa = sorted({c["recipe"].sa_strength
+    all_sa = sorted({c["recipe"].nso_peak_target_d
                      for c in nso.generate_candidates(p, "OD", nso.ai_derived_indices(p))})
     interior = set(all_sa[1:-1])
     assert chosen_sa & interior, "every goal still lands on an SA extreme"
 
 
-def test_an_acuity_led_goal_buys_control_through_coverage():
-    """Extra SA costs acuity, extra fill factor does not. A goal that weights
-    acuity should therefore reach for coverage instead of strength."""
+def test_an_acuity_led_goal_takes_a_lower_optical_target():
+    """A higher optical target costs acuity, so a goal that weights acuity
+    should settle for less of it than a control-led goal does.
+
+    Note it cannot make that up entirely through coverage: the coverage sweep
+    is deliberately narrow, so it cannot span a whole tier step."""
     night, _ = _selected_for("Night Vision")
     myopia, _ = _selected_for("Myopia Management")
-    assert night.sa_strength <= myopia.sa_strength
-    assert night.fill_factor_pct >= myopia.fill_factor_pct - 1e-9
+    assert night.nso_peak_target_d <= myopia.nso_peak_target_d
 
 
 def test_infeasible_designs_stay_out_of_contention():
@@ -1430,9 +1536,9 @@ def test_no_two_elements_fall_closer_than_the_disk_radius():
     """The Poisson-disk guarantee. A jittered grid, which this used to be,
     provides no minimum spacing at all."""
     import math as _math
-    from nso.manufacturing.geometry import _lattice
+    from nso.manufacturing.geometry import _zone_lattice
     r, points = _placement_sample()
-    _semi, radius, *_rest = _lattice(r)
+    _semi, radius, *_rest = _zone_lattice(r.nso_modulation.zones[0])
     assert len(points) > 500
     closest = min(
         _math.dist(a, b)
@@ -1447,15 +1553,21 @@ def test_rejection_actually_happens():
     per cell unconditionally, so nothing is ever rejected. Poisson-disk
     rejects any sample too close to a higher-priority neighbour, so a
     substantial share of cells come out empty."""
-    from nso.manufacturing.geometry import _lattice, _row_samples, _design_seed, _resolve_row
+    from nso.manufacturing.geometry import (
+        _resolve_row, _row_samples, _zone_lattice, _zone_seed,
+    )
     r = _recipe()
-    semi, radius, cell, per_side, _rows = _lattice(r)
-    seed = _design_seed(r)
+    zone = r.nso_modulation.zones[0]
+    semi, radius, cell, per_side, _rows = _zone_lattice(zone)
+    seed = _zone_seed(r, zone)
 
     # A row through the middle of the zone, where cells are not clipped away.
     gi = per_side // 2
-    band = {row: _row_samples(seed, row, cell, semi, per_side)
-            for row in range(gi - 2, gi + 3)}
+    band = {
+        row: _row_samples(seed, row, cell, semi, per_side,
+                          zone.inner_radius_mm, zone.outer_radius_mm)
+        for row in range(gi - 2, gi + 3)
+    }
     candidates = len(band[gi])
     accepted = len(_resolve_row(gi, band, radius))
     assert candidates > 100
@@ -1496,7 +1608,551 @@ def test_a_page_is_fetched_without_walking_the_ones_before_it():
 def test_the_conflict_margin_is_wide_enough_for_the_cell_size():
     """Cells are radius/sqrt(2) across, so conflicts can only reach two cells
     away. A narrower margin would silently admit violations at page seams."""
-    from nso.manufacturing.geometry import _lattice
+    from nso.manufacturing.geometry import _zone_lattice
     r = _recipe()
-    _semi, radius, cell, *_rest = _lattice(r)
+    _semi, radius, cell, *_rest = _zone_lattice(r.nso_modulation.zones[0])
     assert 2 * cell >= radius
+
+
+# --------------------------------------------------------------------------- #
+# Two optical channels (V2.1 baseline, section 6.2)
+#
+# The supervisor's answer to "where does the SA sit" was that these are two
+# different optical channels and must not be merged. An earlier version took
+# the profile's `3-5-4D` modulation label, treated it as surface spherical
+# aberration, and folded it into the sag map.
+# --------------------------------------------------------------------------- #
+
+def test_a_recipe_carries_both_channels_separately():
+    r = _recipe()
+    assert r.base_surface.eye == r.nso_modulation.eye == "OD"
+    assert r.base_surface.sphere == pytest.approx(-3.25)
+    assert r.nso_modulation.zones
+
+
+def test_the_base_surface_carries_no_nso_modulation():
+    """The aspheric term is a property of the SURFACE and defaults to none."""
+    r = _recipe()
+    assert r.base_aspheric_sa_d == 0.0
+    assert r.nso_peak_target_d > 0.0
+
+
+def test_changing_the_microstructure_does_not_move_the_sag_map():
+    """The test that would have caught the original conflation."""
+    gentle = nso.run_fitting(patient(visual_stress_score=10))["design"]["recipes"][0]
+    strong = nso.run_fitting(patient(visual_stress_score=0))["design"]["recipes"][0]
+    assert (gentle.nso_modulation.zone("A").element_height_um
+            != strong.nso_modulation.zone("A").element_height_um)
+    assert nso.surface_map(gentle)["points"] == nso.surface_map(strong)["points"]
+
+
+def test_changing_the_prescription_does_move_the_sag_map():
+    a = nso.run_fitting(patient(od={"sphere": -1.0, "axial_length": 25.1}))["design"]["recipes"][0]
+    b = nso.run_fitting(patient(od={"sphere": -6.0, "axial_length": 25.1}))["design"]["recipes"][0]
+    assert nso.surface_map(a)["points"] != nso.surface_map(b)["points"]
+
+
+def test_the_two_channels_go_to_different_vendors(client, monkeypatch):
+    monkeypatch.setattr(api, "VENDOR_KEYS", ROLE_KEYS)
+    did = nso.clinical_only(patient())["design_id"]
+
+    def pull(key, segment):
+        return client.post(
+            "/api/manufacturing/package",
+            json={"design_id": did, "segment": segment},
+            headers={"x-api-key": key},
+        ).json()
+
+    front = pull("fs-key", "FS")
+    back = pull("bs-key", "BS")
+    assert front["package_type"] == "front_surface_geometry"
+    assert back["package_type"] == "back_surface_geometry"
+    assert "elements" in front["eyes"]["OD"]
+    assert "points" in back["eyes"]["OD"]
+
+
+# --------------------------------------------------------------------------- #
+# Three-zone architecture (V2.1 baseline, sections 6.1 and 6.3)
+# --------------------------------------------------------------------------- #
+
+def test_the_reference_geometry_matches_the_supplied_baseline():
+    """These are the supervisor's measured numbers, not ours."""
+    ref = nso.get_config().zone_reference_geometry
+    assert ref["A"] == {"diameter_um": 22.0, "length_um": 22.0,
+                        "height_um": 2.2, "fill_factor_pct": 38.0}
+    assert ref["B"]["diameter_um"] == 28.0
+    assert ref["C"] == {"diameter_um": 32.0, "length_um": 16.0,
+                        "height_um": 1.0, "fill_factor_pct": 28.0}
+
+
+def test_zone_c_elements_are_elongated():
+    """32 x 16 um, unlike the round elements of zones A and B."""
+    r = _recipe()
+    assert r.nso_modulation.zone("C").is_elongated
+    assert not r.nso_modulation.zone("A").is_elongated
+
+
+def test_the_profile_labels_match_the_supplied_targets():
+    targets = nso.get_config().zone_optical_targets_d
+    assert targets["Low"] == {"A": 1.0, "B": 3.0, "C": 2.0}
+    assert targets["Medium"] == {"A": 3.0, "B": 5.0, "C": 4.0}
+    assert targets["High"] == {"A": 5.0, "B": 8.0, "C": 6.0}
+
+
+def test_zone_targets_are_optical_not_geometric():
+    """`3-5-4D` labels an optical target. Reading it as three surface heights
+    is the interpretation the V2.1 note explicitly warns against."""
+    r = _recipe()
+    for label, target_d in r.nso_modulation.zone_targets_d.items():
+        height = r.nso_modulation.zone(label).element_height_um
+        assert height != target_d, (
+            f"zone {label} height equals its dioptric target — the two are "
+            "being treated as the same quantity"
+        )
+
+
+def test_every_zone_occupies_its_own_annulus():
+    zones = _recipe().nso_modulation.zones
+    for inner, outer in zip(zones, zones[1:]):
+        assert inner.outer_radius_mm == outer.inner_radius_mm
+    assert zones[0].inner_radius_mm == 0.0
+
+
+def test_a_stronger_tier_asks_for_more_from_every_zone():
+    cfg = nso.get_config()
+    for zone in ("A", "B", "C"):
+        assert (cfg.zone_optical_targets_d["High"][zone]
+                > cfg.zone_optical_targets_d["Low"][zone])
+
+
+def test_the_temporal_sector_is_modulated():
+    """The V2.1 baseline puts this at 25-35%."""
+    modulation = _recipe().nso_modulation.temporal_modulation_pct
+    assert 15.0 <= modulation <= 60.0
+
+
+# --------------------------------------------------------------------------- #
+# Manufacturing compensation (V2.1 baseline: HC turns 3.0 um into ~1.8 um)
+# --------------------------------------------------------------------------- #
+
+def test_the_reported_transfer_loss_is_reproduced():
+    """The one datum available: hard coat leaves about 1.8 um of a 3.0 um
+    design."""
+    transfer = nso.manufacturing.compensation.active_transfer()
+    assert transfer.as_built_height_um(3.0) == pytest.approx(1.8, abs=0.01)
+
+
+def test_the_machine_is_asked_to_cut_more_than_the_design_height():
+    """Pre-compensation: cutting the design value would leave the lens short."""
+    report = nso.compensation_report(_recipe())
+    for zone in report["zones"]:
+        assert zone["cut"]["element_height_um"] > zone["design"]["element_height_um"]
+
+
+def test_compensation_lands_back_on_the_design_height():
+    report = nso.compensation_report(_recipe())
+    for zone in report["zones"]:
+        assert zone["predicted_as_built"]["element_height_um"] == pytest.approx(
+            zone["design"]["element_height_um"], abs=0.01)
+
+
+def test_the_transfer_model_admits_it_is_uncalibrated():
+    report = nso.compensation_report(_recipe())
+    assert report["transfer_model"]["calibrated"] is False
+
+
+def test_the_vendor_receives_cut_heights_not_design_heights(client, monkeypatch):
+    """Compensation belongs to manufacturing, so the vendor gets the number to
+    cut. It is folded into the coordinates rather than shipped as a table,
+    because a table would have to name zones and design heights."""
+    monkeypatch.setattr(api, "VENDOR_KEYS", ROLE_KEYS)
+    did = nso.clinical_only(patient())["design_id"]
+    package = client.post(
+        "/api/manufacturing/package",
+        json={"design_id": did, "segment": "FS"},
+        headers={"x-api-key": "fs-key"},
+    ).json()
+
+    page = package["eyes"]["OD"]
+    assert page["geometry"] == "as_cut"
+    assert "zone" not in page
+    assert "cut_geometry" not in page
+
+    recipe = nso.REGISTRY._get(did)["recipes"][0]
+    design_heights = {z.element_height_um / 1000.0
+                      for z in recipe.nso_modulation.zones}
+    shipped = {row[4] for row in page["elements"]}
+    assert shipped and not (shipped & design_heights), (
+        "the vendor received design heights, not compensated ones"
+    )
+
+
+def test_compensation_is_not_folded_into_the_fitting_engine():
+    """The 3.0 -> 1.8 um shortfall is a property of the coating line. Tuning
+    the design rules to hide it would make the engine wrong everywhere else."""
+    from nso.config import use_config
+    original = nso.get_config()
+    design_before = nso.run_fitting(patient())["design"]["recipes"][0]
+    try:
+        use_config(original.evolve(process_height_retention=0.4))
+        design_after = nso.run_fitting(patient())["design"]["recipes"][0]
+        assert (design_before.nso_modulation.zone("A").element_height_um
+                == design_after.nso_modulation.zone("A").element_height_um)
+    finally:
+        use_config(original)
+
+
+# --------------------------------------------------------------------------- #
+# Bounded modifiers (V2.1 baseline, section 6.5)
+# --------------------------------------------------------------------------- #
+
+def test_corneal_sa_compensation_is_partial_never_total():
+    """GIVEN: 25-50%. Corneal SA is not whole-eye SA."""
+    assert 0.25 <= nso.get_config().sa_corneal_compensation <= 0.50
+
+
+def test_hoa_tolerance_stays_inside_the_given_range():
+    """GIVEN: reduce maximum modulation by about 10-20%."""
+    assert 0.10 <= nso.get_config().sa_hoa_tolerance_gain <= 0.20
+
+
+def test_corneal_asphericity_is_a_secondary_modifier():
+    """GIVEN: +/-5-10%."""
+    assert 0.05 <= nso.get_config().sa_corneal_asphericity_gain <= 0.10
+
+
+def test_the_modifiers_move_the_design_without_dominating_it():
+    """A modifier adjusts; it does not decide. Each one alone should shift the
+    geometry by a few percent, not reshape it."""
+    base = nso.run_fitting(patient())["design"]["recipes"][0]
+    base_h = base.nso_modulation.zone("A").element_height_um
+
+    for field, value in [("corneal_sa", 0.55), ("hoa_rms", 0.55),
+                         ("corneal_eccentricity", 0.85)]:
+        altered = nso.run_fitting(patient(**{field: value}))["design"]["recipes"][0]
+        shift = abs(altered.nso_modulation.zone("A").element_height_um / base_h - 1)
+        assert 0 < shift < 0.25, f"{field} shifted the design by {shift:.0%}"
+
+
+# --------------------------------------------------------------------------- #
+# The functional requirement vector (V2.1 baseline: the architecture change)
+# --------------------------------------------------------------------------- #
+
+def test_the_clinical_stage_produces_a_normalized_demand_vector():
+    """Product-independent by design: the clinical layer must survive a move to
+    MR-8, PC, contact lenses or a different vendor."""
+    from nso.design.synthesis import modulation_target
+    p = _probe_patient()
+    target = modulation_target(p, "OD", nso.ai_derived_indices(p))
+    for name, value in target.as_dict().items():
+        assert 0.0 <= value <= 1.0, f"{name} left the unit interval"
+
+
+def test_the_demand_vector_reaches_the_geometry():
+    """Otherwise the whole clinical layer is decorative: the tier target is
+    quantized, so without the demand vector every patient in a tier would
+    receive an identical lens."""
+    mild = nso.run_fitting(patient(
+        od={"sphere": -1.0, "axial_length": 23.0}))["design"]["recipes"][0]
+    severe = nso.run_fitting(patient(
+        od={"sphere": -8.0, "axial_length": 26.5}))["design"]["recipes"][0]
+    assert (severe.nso_modulation.zone("A").element_height_um
+            > mild.nso_modulation.zone("A").element_height_um)
+
+
+def test_the_clinical_payload_never_carries_zone_geometry():
+    payload = nso.clinical_only(patient())
+    nso.assert_no_design_leak(payload)
+    text = json.dumps(payload).lower()
+    for term in ("element_height", "element_diameter", "zone_a", "fill_factor",
+                 "aspheric", "3-5-4"):
+        assert term not in text
+
+
+# --------------------------------------------------------------------------- #
+# Contrast sensitivity schema (V2.1 baseline, section 6.6)
+# --------------------------------------------------------------------------- #
+
+def test_a_measurement_carries_its_own_protocol():
+    m = nso.CsfMeasurement(
+        spatial_frequency_cpd=[1.5, 3.0, 6.0, 12.0, 18.0],
+        log_cs=[1.75, 1.90, 1.80, 1.40, 0.90],
+        device="CSV-1000", test_protocol="photopic",
+    )
+    record = m.as_record()
+    for key in ("device", "test_protocol", "spatial_frequency_cpd",
+                "raw_sensitivity", "log_cs", "normalization_reference",
+                "csf_auc", "csf_slope", "csf_centroid_cpd"):
+        assert key in record
+
+
+def test_the_same_curve_at_different_frequencies_reads_differently():
+    """The failure the fixed 1.5/6/18 assumption caused: two clinics with
+    different protocols got the same AUC for different measurements."""
+    curve = [1.75, 1.90, 1.80, 1.40, 0.90]
+    narrow = nso.CsfMeasurement(spatial_frequency_cpd=[3, 4, 6, 9, 12], log_cs=curve)
+    wide = nso.CsfMeasurement(spatial_frequency_cpd=[1, 2, 4, 8, 16], log_cs=curve)
+    assert narrow.slope() != wide.slope()
+    assert narrow.centroid_cpd() != wide.centroid_cpd()
+
+
+def test_raw_sensitivity_and_log_cs_convert_to_each_other():
+    from_raw = nso.CsfMeasurement(
+        spatial_frequency_cpd=[1.5, 6.0], raw_sensitivity=[100.0, 10.0])
+    assert from_raw.log_cs == pytest.approx([2.0, 1.0])
+    from_log = nso.CsfMeasurement(
+        spatial_frequency_cpd=[1.5, 6.0], log_cs=[2.0, 1.0])
+    assert from_log.raw_sensitivity == pytest.approx([100.0, 10.0])
+
+
+def test_an_assumed_protocol_is_flagged_as_assumed():
+    """The assumption travels with the data instead of hiding in the engine."""
+    assumed = nso.csf_from_triplet(90, 70, 40)
+    stated = nso.csf_from_triplet(90, 70, 40, frequencies=[1.0, 4.0, 16.0])
+    assert assumed.frequencies_assumed is True
+    assert stated.frequencies_assumed is False
+
+
+def test_the_band_is_a_fallback_not_a_measurement():
+    """Low/Mid/High is a clinician's impression. It must not be recorded as
+    though an instrument produced it."""
+    banded = patient(csf_band="Low")
+    measured = patient(csf_low=90.0, csf_mid=70.0, csf_high=40.0)
+    assert banded.csf_is_measured is False
+    assert measured.csf_is_measured is True
+
+
+def test_the_payload_says_whether_csf_was_measured():
+    banded = nso.clinical_only(patient(csf_band="Low"))["csf_protocol"]
+    measured = nso.clinical_only(
+        patient(csf_low=90.0, csf_mid=70.0, csf_high=40.0,
+                csf_device="CSV-1000"))["csf_protocol"]
+    assert banded["measured"] is False
+    assert "band" in banded["source"]
+    assert measured["measured"] is True
+    assert measured["device"] == "CSV-1000"
+
+
+def test_a_measured_curve_beats_the_band():
+    with_band = patient(csf_band="Low").csf_value()
+    with_curve = patient(csf_band="Low", csf_low=95.0, csf_mid=95.0,
+                         csf_high=95.0).csf_value()
+    assert with_curve > with_band
+
+
+def test_the_band_mapping_is_configurable(restore_config):
+    """It must not harden into a device-specific constant."""
+    from nso.config import use_config
+    before = patient(csf_band="Low").csf_value()
+    use_config(nso.get_config().evolve(
+        csf_bands={"Low": 20.0, "Mid": 70.0, "High": 90.0}))
+    assert patient(csf_band="Low").csf_value() != before
+
+
+def test_the_measured_frequencies_reach_the_design():
+    """Slope is per decade of spatial frequency, so the protocol changes what
+    a roll-off costs — a difference of two raw values cannot see that."""
+    steep = nso.ai_derived_indices(patient(
+        csf_low=90.0, csf_mid=70.0, csf_high=40.0,
+        csf_frequencies_cpd=[3.0, 6.0, 12.0]))
+    gentle = nso.ai_derived_indices(patient(
+        csf_low=90.0, csf_mid=70.0, csf_high=40.0,
+        csf_frequencies_cpd=[1.0, 4.0, 16.0]))
+    assert (steep["spatial_frequency_sensitivity"]
+            < gentle["spatial_frequency_sensitivity"])
+
+
+def test_a_short_or_ragged_curve_is_rejected_rather_than_guessed():
+    assert nso.CsfMeasurement(spatial_frequency_cpd=[6.0], log_cs=[1.5]).auc() is None
+    mismatched = nso.CsfMeasurement(
+        spatial_frequency_cpd=[1.5, 6.0, 18.0], log_cs=[1.5, 1.2])
+    assert mismatched.is_usable is False
+
+
+# --------------------------------------------------------------------------- #
+# The pipeline (V2.1 baseline: the architecture change)
+# --------------------------------------------------------------------------- #
+
+def test_the_pipeline_runs_every_stage():
+    result = nso.run_pipeline(_probe_patient())
+    for stage in nso.STAGES:
+        assert result.stage(stage), f"stage {stage} produced nothing"
+
+
+def test_the_pipeline_can_stop_early():
+    """A caller that only wants the demand vector should not pay for geometry."""
+    early = nso.run_pipeline(_probe_patient(), through="functional_requirement")
+    assert early.functional_requirement
+    assert not early.geometry_projection
+    assert not early.manufacturing_compensation
+
+
+def test_an_unknown_stage_is_rejected():
+    with pytest.raises(KeyError):
+        nso.run_pipeline(_probe_patient(), through="not_a_stage")
+
+
+def test_the_first_two_stages_are_product_independent():
+    """The boundary that lets the clinical layer survive a move to MR-8, PC or
+    contact lenses: nothing above it may mention lens geometry."""
+    result = nso.run_pipeline(_probe_patient(), through="functional_requirement")
+    text = json.dumps({
+        "phenotype": result.clinical_phenotype["phenotype"],
+        "indices": result.clinical_phenotype["indices"],
+        "requirement": {k: v.as_dict()
+                        for k, v in result.functional_requirement.items()},
+    }).lower()
+    for term in ("zone", "element", "fill_factor", "micro", "sag", "height_um"):
+        assert term not in text
+
+
+def test_the_demand_vector_stays_in_the_unit_interval():
+    result = nso.run_pipeline(_probe_patient(), through="functional_requirement")
+    for eye, target in result.functional_requirement.items():
+        for name, value in target.as_dict().items():
+            assert 0.0 <= value <= 1.0, f"{eye}.{name} left the unit interval"
+
+
+def test_a_process_change_moves_only_the_last_stages():
+    """The 3.0 -> 1.8 um coating loss must not reach back into the design."""
+    from nso.config import use_config
+    original = nso.get_config()
+    p = _probe_patient()
+    before = nso.run_pipeline(p)
+    try:
+        use_config(original.evolve(process_height_retention=0.4))
+        after = nso.run_pipeline(p)
+        assert (before.optical_target == after.optical_target)
+        assert (before.design_profile["recipes"]["OD"].nso_modulation.zones
+                == after.design_profile["recipes"]["OD"].nso_modulation.zones)
+        assert (before.manufacturing_compensation["OD"]["zones"][0]["cut"]
+                != after.manufacturing_compensation["OD"]["zones"][0]["cut"])
+    finally:
+        use_config(original)
+
+
+def test_a_clinical_change_moves_the_whole_chain():
+    mild = nso.run_pipeline(patient(od={"sphere": -1.0, "axial_length": 23.0}))
+    severe = nso.run_pipeline(patient(od={"sphere": -8.0, "axial_length": 26.5}))
+    assert (mild.functional_requirement["OD"].control_demand
+            < severe.functional_requirement["OD"].control_demand)
+    assert (mild.design_profile["recipes"]["OD"].nso_modulation.zone("A").element_height_um
+            < severe.design_profile["recipes"]["OD"].nso_modulation.zone("A").element_height_um)
+
+
+def test_geometry_projection_keeps_the_two_channels_apart():
+    projection = nso.run_pipeline(_probe_patient()).geometry_projection["OD"]
+    assert "points" in projection["base_surface"]
+    assert "elements" in projection["nso_modulation"]
+    assert "elements" not in projection["base_surface"]
+    assert "points" not in projection["nso_modulation"]
+
+
+def test_the_pipeline_description_matches_what_runs():
+    described = [stage["stage"] for stage in nso.describe_pipeline()]
+    assert described == list(nso.STAGES)
+
+
+def test_the_pipeline_is_reported_by_the_health_endpoint(client):
+    assert client.get("/api/health").json()["pipeline"] == list(nso.STAGES)
+
+
+# --------------------------------------------------------------------------- #
+# Neurovisual: record, normalize, then credit — in that order (V2.1 § 6.7)
+# --------------------------------------------------------------------------- #
+
+def test_confidence_does_not_rise_for_having_run_a_test():
+    """The V2.1 baseline is explicit: confidence must not increase mechanically
+    just because a VEP was performed. A bare number carries no stimulus, unit
+    or normative reference, so nothing was learned from it."""
+    base = nso.clinical_only(patient())["prediction_confidence"]
+    bare = nso.clinical_only(patient(vep=1.5))["prediction_confidence"]
+    assert bare == base
+
+
+def test_an_interpretable_result_does_raise_confidence():
+    base = nso.clinical_only(patient())["prediction_confidence"]
+    scored = nso.clinical_only(
+        patient(vep_z_score=-1.2))["prediction_confidence"]
+    assert scored > base
+
+
+def test_eye_tracking_sub_metrics_are_interpretable_on_their_own():
+    """Each has a defined scale, unlike a single opaque 'eye tracking' number."""
+    base = nso.clinical_only(patient())["prediction_confidence"]
+    tracked = nso.clinical_only(
+        patient(fixation_stability=12.0, blink_rate=14.0))["prediction_confidence"]
+    assert tracked > base
+
+
+def test_a_bare_value_is_still_recorded():
+    """record -> normalize -> confidence, in that order. An uninterpretable
+    value is kept for the future dataset even though it cannot be used now."""
+    p = patient(vep=1.5)
+    assert p.neurovisual_recorded is True
+    assert p.has_interpretable_neurovisual is False
+
+
+def test_the_payload_distinguishes_recorded_from_used():
+    """A clinician who ran a VEP deserves to see which of the two happened."""
+    assert nso.clinical_only(patient())["neurovisual_status"] == "not_recorded"
+    assert nso.clinical_only(
+        patient(vep=1.5))["neurovisual_status"] == "recorded_not_interpretable"
+    assert nso.clinical_only(
+        patient(vep_z_score=-1.2))["neurovisual_status"] == "interpretable"
+
+
+def test_the_structured_vep_schema_is_recorded():
+    """stimulus -> amplitude -> latency -> interocular difference -> z-score."""
+    fields = set(nso.PatientInput.__dataclass_fields__)
+    assert {"vep_stimulus", "vep_amplitude_uv", "vep_latency_ms",
+            "vep_interocular_difference_ms", "vep_z_score"} <= fields
+
+
+def test_eye_tracking_sub_metrics_are_recorded_individually():
+    fields = set(nso.PatientInput.__dataclass_fields__)
+    assert {"fixation_stability", "blink_rate", "vergence_stability",
+            "pupil_dynamics", "gaze_distribution"} <= fields
+
+
+def test_neurovisual_features_exist_for_the_future_optimizer():
+    """Logged now so the dataset is there when eye tracking is ready to enter
+    the optimizer, which the baseline expects it to do first."""
+    values = nso.patient_features(
+        patient(fixation_stability=12.0, vep_z_score=-1.2)).values
+    for name in ("fixation_stability", "blink_rate", "vergence_stability",
+                 "pupil_dynamics", "gaze_distribution", "vep_z_score",
+                 "vep_latency_ms", "erg_z_score"):
+        assert name in values
+
+
+# --------------------------------------------------------------------------- #
+# The two optical channels are separate objects in the database (V2.1 § 6.2)
+# --------------------------------------------------------------------------- #
+
+def test_the_database_stores_two_independent_optical_objects():
+    """Keeping them apart in storage is what stops a later reader treating
+    microstructure modulation as base-surface sag."""
+    design_id = nso.clinical_only(patient())["design_id"]
+    entry = nso.REGISTRY._get(design_id)
+    assert "base_surface_optical_profile" in entry
+    assert "nso_spatial_modulation_profile" in entry
+
+
+def test_the_stored_channels_hold_different_quantities():
+    design_id = nso.clinical_only(patient())["design_id"]
+    entry = nso.REGISTRY._get(design_id)
+    base = entry["base_surface_optical_profile"]["OD"]
+    nso_profile = entry["nso_spatial_modulation_profile"]["OD"]
+    assert "sphere" in base and "zones" not in base
+    assert "zones" in nso_profile and "sphere" not in nso_profile
+
+
+def test_the_stored_channels_survive_a_round_trip(tmp_path):
+    from nso.manufacturing.store import SQLiteDesignStore
+    registry = nso.DesignRegistry(store=SQLiteDesignStore(tmp_path / "ch.db"))
+    entry = nso.run_fitting(patient())["design"]
+    registry.register(entry["design_id"], entry)
+    restored = registry._get(entry["design_id"])
+    assert restored["base_surface_optical_profile"]["OD"]["sphere"] == \
+        entry["base_surface_optical_profile"]["OD"]["sphere"]

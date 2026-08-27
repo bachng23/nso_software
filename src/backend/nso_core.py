@@ -2,8 +2,14 @@
 NSO AI-PC Fitting v0.3 — computation engine (Streamlit-free).
 
 All the deterministic rule-based logic lives here so it can be imported by
-the FastAPI backend and the tests without pulling in a UI. The internal design
-console (internal/design_console.py) imports the same module.
+the FastAPI backend and the tests without pulling in a UI.
+
+NOTE: this module predates the V2.1 baseline. Its NSO_PROFILES table describes
+the old single-channel SA/density model, which the engine no longer uses for
+design synthesis -- see ``nso/design/synthesis.py`` for the three-zone model
+that replaced it. What is still used here are the scoring helpers
+(control_score, neural_adaptation, visual_stress, entropy_score) and the
+follow-up progression bands.
 """
 
 import numpy as np

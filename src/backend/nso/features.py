@@ -24,7 +24,6 @@ Two vectors, because the thing to be learned is ``outcome = f(patient, design)``
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -166,12 +165,22 @@ def accommodative_stress_index(p: PatientInput) -> float:
 
 
 def spatial_frequency_sensitivity_index(p: PatientInput) -> float:
-    """Higher = better spatial-frequency performance (this one is a quality)."""
+    """Higher = better spatial-frequency performance (this one is a quality).
+
+    The roll-off penalty reads the measurement's SLOPE rather than the
+    difference between two raw values. Slope is per decade of spatial
+    frequency, so it accounts for the frequencies the instrument actually
+    used: losing 0.8 logCS between 1.5 and 18 cpd is a gentler curve than
+    losing the same amount between 1.5 and 6, and a difference of raw values
+    cannot tell those apart.
+    """
     base = p.csf_value()
-    if p.csf_high is not None and p.csf_low is not None:
-        # A steep high-frequency roll-off costs more than the mean suggests.
-        rolloff = norm(p.csf_low - p.csf_high, 0, 50)
-        base = base * (1 - 0.20 * rolloff)
+    measurement = p.csf()
+    if measurement is not None:
+        slope = measurement.slope()
+        if slope is not None and slope < 0:
+            # A steep high-frequency roll-off costs more than the mean suggests.
+            base = base * (1 - 0.20 * norm(-slope, 0.0, 1.5))
     return round(clip100(base), 1)
 
 
@@ -271,35 +280,16 @@ def ai_derived_indices(p: PatientInput) -> Dict[str, float]:
 # --------------------------------------------------------------------------- #
 
 def csf_descriptors(p: PatientInput) -> Dict[str, Optional[float]]:
-    """AUC, slope and sensitivity centroid from the measured CSF triplet."""
-    vals = (p.csf_low, p.csf_mid, p.csf_high)
-    if any(v is None for v in vals):
+    """AUC, slope and sensitivity centroid from the measurement.
+
+    Computed at the frequencies the instrument actually used, so a clinic with
+    a different protocol gets correct numbers rather than numbers computed
+    against an assumption the engine made on its behalf.
+    """
+    measurement = p.csf()
+    if measurement is None:
         return {"csf_auc": None, "csf_slope": None, "csf_centroid_cpd": None}
-
-    freqs = get_config().csf_frequencies_cpd
-    lo, mid, hi = (float(v) for v in vals)
-    f = [math.log10(x) for x in freqs]
-
-    # AUC by the trapezoid rule on the log-frequency axis, normalized to 0-100
-    # against a flat 100-sensitivity reference so the number stays readable.
-    span = f[-1] - f[0]
-    area = 0.5 * ((lo + mid) * (f[1] - f[0]) + (mid + hi) * (f[2] - f[1]))
-    auc = area / (100.0 * span) * 100.0
-
-    slope = (hi - lo) / span
-
-    total = lo + mid + hi
-    centroid = (
-        sum(v * fr for v, fr in zip((lo, mid, hi), freqs)) / total
-        if total > 0
-        else None
-    )
-
-    return {
-        "csf_auc": round(auc, 1),
-        "csf_slope": round(slope, 1),
-        "csf_centroid_cpd": round(centroid, 2) if centroid is not None else None,
-    }
+    return measurement.descriptors()
 
 
 def interocular_acuity_difference(p: PatientInput) -> Optional[float]:
@@ -604,6 +594,19 @@ def patient_features(p: PatientInput) -> FeatureVector:
         "vep": p.vep,
         "erg": p.erg,
         "eye_tracking": p.eye_tracking,
+        # Structured neurovisual. Recorded and exposed as features now, so the
+        # dataset exists when these are ready to enter the optimizer -- which
+        # the V2.1 baseline expects eye tracking to do first.
+        "vep_amplitude_uv": p.vep_amplitude_uv,
+        "vep_latency_ms": p.vep_latency_ms,
+        "vep_interocular_difference_ms": p.vep_interocular_difference_ms,
+        "vep_z_score": p.vep_z_score,
+        "erg_z_score": p.erg_z_score,
+        "fixation_stability": p.fixation_stability,
+        "blink_rate": p.blink_rate,
+        "vergence_stability": p.vergence_stability,
+        "pupil_dynamics": p.pupil_dynamics,
+        "gaze_distribution": p.gaze_distribution,
         "hoa_rms": p.hoa_rms,
         "corneal_sa": p.corneal_sa,
         "coma": p.coma,
@@ -634,19 +637,19 @@ def _effective_control_power(recipe: DesignRecipe) -> float:
 
     Two independent contributions, matching the two candidate axes:
 
-      * **strength** -- SA relative to the tier's nominal value
-      * **coverage** -- fill factor relative to the reference treated area
+      * **strength** -- the NSO peak zone target relative to the tier nominal
+      * **coverage** -- mean fill factor relative to the reference coverage
 
-    Both raise predicted control, and each costs something different (SA costs
-    acuity, coverage costs comfort and robustness). That is what makes the two
-    axes a real choice rather than one dominated ranking.
+    Both raise predicted control, and each costs something different (a higher
+    target costs acuity, more coverage costs comfort and robustness). That is
+    what makes the two axes a real choice rather than one dominated ranking.
     """
     cfg = get_config()
     profile = engine.NSO_PROFILES[recipe.profile_tier]
 
-    nominal_sa = profile["sa_strength"] or 1.0
-    strength_ratio = recipe.sa_strength / nominal_sa - 1.0
-    coverage_ratio = recipe.fill_factor_pct / cfg.reference_fill_factor_pct - 1.0
+    nominal = profile["sa_strength"] or 1.0
+    strength_ratio = recipe.nso_peak_target_d / nominal - 1.0
+    coverage_ratio = recipe.mean_fill_factor_pct / cfg.reference_fill_factor_pct - 1.0
 
     scaled = profile["control_power"] * (
         1.0
@@ -657,35 +660,36 @@ def _effective_control_power(recipe: DesignRecipe) -> float:
 
 
 def design_features(recipe: DesignRecipe) -> FeatureVector:
-    """Design IP features. Server-side only — never logged to a client."""
-    return FeatureVector(
-        kind="design",
-        values={
-            "sa_strength": recipe.sa_strength,
-            "microstructure_diameter_um": recipe.microstructure_diameter_um,
-            "microstructure_height_um": recipe.microstructure_height_um,
-            "fill_factor_pct": recipe.fill_factor_pct,
-            "spatial_density_per_mm2": recipe.spatial_density_per_mm2,
-            "spatial_jitter_deg": recipe.spatial_jitter_deg,
-            "temporal_nasal_ratio": recipe.temporal_nasal_ratio,
-            "target_mtf_modulation": recipe.target_mtf_modulation,
-            "zone_count": float(recipe.zone_count),
-            "entropy": recipe.entropy,
-            "eye_axial_length": recipe.axial_length,
-            # Control power of the profile tier this design was built from.
-            # A design property, so it belongs in the design vector rather
-            # than being inferred back from SA strength.
-            "tier_control_power": engine.NSO_PROFILES[recipe.profile_tier][
-                "control_power"
-            ],
-            # Control power adjusted for this design's actual optical load.
-            # A design carrying more SA than its tier's nominal value is
-            # predicted to control more; without this the candidates within a
-            # tier are indistinguishable on control and the strongest one is
-            # never worth choosing.
-            "effective_control_power": _effective_control_power(recipe),
-        },
-    )
+    """Design IP features. Server-side only -- never logged to a client.
+
+    Names carry the channel, so a model cannot learn from "SA" without knowing
+    whether that is the back surface's aberration or the microstructure's
+    modulation target. Conflating the two is the error the recipe split fixes.
+    """
+    nso = recipe.nso_modulation
+    values = {
+        # NSO microstructure channel
+        "nso_peak_target_d": nso.peak_target_d,
+        "nso_mean_fill_factor_pct": nso.mean_fill_factor_pct,
+        "nso_temporal_modulation_pct": nso.temporal_modulation_pct,
+        "nso_spatial_jitter_deg": nso.spatial_jitter_deg,
+        "nso_entropy": nso.entropy,
+        # Base surface channel
+        "base_aspheric_sa_d": recipe.base_aspheric_sa_d,
+        # Shared
+        "target_mtf_modulation": recipe.target_mtf_modulation,
+        "eye_axial_length": recipe.axial_length,
+        "tier_control_power": engine.NSO_PROFILES[recipe.profile_tier][
+            "control_power"
+        ],
+        "effective_control_power": _effective_control_power(recipe),
+    }
+    for zone in nso.zones:
+        values[f"zone_{zone.zone}_target_d"] = nso.zone_targets_d[zone.zone]
+        values[f"zone_{zone.zone}_height_um"] = zone.element_height_um
+        values[f"zone_{zone.zone}_diameter_um"] = zone.element_diameter_um
+        values[f"zone_{zone.zone}_fill_factor_pct"] = zone.fill_factor_pct
+    return FeatureVector(kind="design", values=values)
 
 
 def training_row(

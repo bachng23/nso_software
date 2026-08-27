@@ -103,15 +103,10 @@ Other modules:
 - `report.py` — clinical-layer PDF report. Carries the Design ID, not the recipe.
 - `nso_v2.py` — deprecated shim re-exporting `nso`, kept so the pre-package test
   suite runs unchanged and proves the split was behaviour-preserving.
-The internal Streamlit design console lives at `internal/design_console.py` —
-outside `src/backend`, which is the deploy root, so it cannot be packaged by
-accident. It shows the full design recipe and refuses to start without
-`NSO_INTERNAL_CONSOLE=1`:
-
-```bash
-pip install -r internal/requirements.txt
-NSO_INTERNAL_CONSOLE=1 streamlit run internal/design_console.py
-```
+The Streamlit design console has been removed. It rendered the full design
+recipe — SA, density, manufacturing export — which is exactly what the IP
+layering exists to keep off a screen, and it had fallen behind the V2.1
+three-zone model besides. The Next.js interface is the only UI.
 
 ## Replacing the rules with a trained model
 

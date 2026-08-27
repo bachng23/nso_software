@@ -1,5 +1,13 @@
 # Giả định, hằng số bịa, và những chỗ chưa chắc chắn
 
+> **Cập nhật 2026-08-24 — V2.1 Design Baseline.** Thầy đã trả lời phần lớn câu hỏi
+> và cung cấp **số liệu thật đầu tiên**: bảng hình học ba vùng A/B/C, mục tiêu
+> quang học từng tier, đường kính kính 65 mm, hệ số truyền quy trình (3.0 → 1.8 µm),
+> và các khoảng modifier có biên. Những mục dưới đây đã được cập nhật theo.
+>
+> Điều quan trọng nhất thầy nói: *"381 test pass nghĩa là **phần mềm** V2 đã xong,
+> nhưng **mô hình quang học** mới ở khoảng V0.5."*
+
 Tài liệu này liệt kê **mọi con số trong hệ thống không đến từ dữ liệu thật**, và mọi
 chỗ code đang đoán. Viết ra để không ai — kể cả người viết code — nhầm tưởng một
 con số nào đó đã được kiểm chứng.
@@ -22,6 +30,14 @@ Phân mức:
 
 ## 🔴 P0 — Chặn trước khi dùng thật
 
+### P0-1. Hằng số cấu tạo tròng kính — 🟡 MỘT PHẦN ĐÃ CÓ SỐ THẬT
+
+✅ **Đường kính kính = 65 mm** — thầy cho (`r = 0 → 32.5 mm`). Trước để 40 mm.
+
+❌ Còn lại vẫn bịa: chiết suất 1.60, base curve 4.0 D, bán kính vùng chức năng 10 mm.
+
+<details><summary>Nội dung cũ</summary>
+
 ### P0-1. Hằng số cấu tạo tròng kính hoàn toàn là bịa
 
 [`nso/config.py`](src/backend/nso/config.py) — nhóm *Lens construction*
@@ -42,6 +58,26 @@ Hậu quả: chúng quyết định **toàn bộ hình học** gửi cho nhà m�
 - `SA_REFERENCE_SEMI_DIAMETER_MM` sai → sai độ lớn số hạng bậc cao
 
 **Cần**: spec thật của tròng kính NSO.
+</details>
+
+### ~~P0-2. Quy ước SA → sag~~ ✅ CÂU HỎI ĐÃ ĐƯỢC TRẢ LỜI
+
+Thầy làm rõ: **SA mặt nền và điều biến vi cấu trúc là HAI KÊNH QUANG HỌC RIÊNG**,
+không được gộp.
+
+| Kênh | Nội dung |
+|---|---|
+| Mặt sau/nền | đơn kính · freeform · **tuỳ chọn** aspheric/SA bậc thấp |
+| Vi cấu trúc mặt trước | điều biến theo thống kê không gian · tán xạ/pha · blue-noise/Poisson · bất đối xứng thái dương |
+
+Và chỉ đích danh lỗi cũ: *"nếu coi hiệu ứng quang học của vi cấu trúc NSO cũng là
+SA sag thì **sai**."*
+
+Đã tách thành `BaseSurfaceProfile` và `NsoModulationProfile`. `surface_map()` giờ
+chỉ đọc `base_surface.aspheric_sa_d` (mặc định 0), **không bao giờ** đọc mục tiêu
+vi cấu trúc. Có test khẳng định đổi vi cấu trúc không làm nhúc nhích bản đồ sag.
+
+<details><summary>Nội dung cũ</summary>
 
 ### P0-2. Quy ước chuyển "SA strength (D)" → sag là mình tự đặt
 
@@ -54,6 +90,7 @@ Recipe lưu SA dưới dạng **dioptre**. Muốn xuất hình học phải chuy
 > thêm vào tại `r0` khớp với add đó.
 
 Đây **không phải công thức chuẩn ngành**. Nó tự nhất quán, không đảm bảo đúng.
+</details>
 
 ### P0-3. Roll-off của số hạng bậc cao là placeholder thuần tuý
 
@@ -80,8 +117,20 @@ tục tới đạo hàm bậc 2 ở cả hai đầu.
 Sag vẫn trong khoảng hợp lý (< 3 mm). Độ rộng blend `sa_rolloff_blend_mm = 4.0`
 là **số bịa**.
 
-**Vẫn cần**: kỹ sư quang học quyết định hàm roll-off thật. Blend này chỉ *trơn*,
-không có nghĩa là *đúng*. Đây không phải quyết định phần mềm.
+✅ **THẦY ĐÃ CHỌN: phương án (b)+(c) kết hợp.**
+
+Số hạng bậc cao chỉ tồn tại **trong vùng quang học chức năng xác định**, chuyển
+tiếp trơn ở biên vùng. Không được để một đa thức r⁴ chạy tự do tới rìa phôi 65 mm.
+
+```
+SA_effective(r) = C₄·r⁴ · W(r)     với W(r) là cửa sổ có biên
+```
+
+Đã cài `_window()` dùng smootherstep. Blend 4 mm **giữ lại như mặc định kỹ thuật**,
+đúng lời thầy: *"a 4 mm smooth blend can be used as an engineering default rather
+than as a fixed NSO physical constant"*.
+
+⚠️ Độ rộng thật vẫn cần xác định từ MTF/PSF + khả năng gia công freeform.
 
 ### P0-4. Dung sai nghiệm thu là số bịa
 
@@ -189,6 +238,29 @@ CSF_BANDS = {"Low": 45.0, "Mid": 70.0, "High": 90.0}
 Bác sĩ ở Tier 1 chỉ chọn Low/Mid/High, hệ thống quy thành 45/70/90 trên thang 0–100.
 Thang 0–100 này **cũng không phải đơn vị CSF thật** (log contrast sensitivity).
 
+### ~~P1-4. Tần số CSF giả định~~ ✅ ĐÃ SỬA THEO ĐÚNG YÊU CẦU
+
+Thầy xác nhận cách tiếp cận đúng và **yêu cầu đi xa hơn**: đừng ánh xạ cố định
+Low/Mid/High thành 45/70/90, và lưu đủ schema.
+
+Module mới `nso/csf.py` với `CsfMeasurement` lưu:
+
+```
+device · test_protocol · spatial_frequency_cpd[] · raw_sensitivity[]
+logCS[] · normalization_reference · AUC · slope · centroid
+```
+
+- Tần số **đi kèm từng phép đo**, không phải hằng số toàn cục
+- Nếu phòng khám không báo tần số → đánh dấu `frequencies_assumed: True`, giả định
+  đi theo dữ liệu chứ không nấp trong engine
+- Low/Mid/High thành **fallback**, và `csf_is_measured` phân biệt rõ
+- Slope dùng bình phương tối thiểu trên **mọi** điểm, nên protocol 5+ tần số dùng hết
+- Slope (có tính tới tần số) giờ điều khiển phạt roll-off, thay cho hiệu hai giá trị thô
+
+Kết quả trả về mang `csf_protocol` để bác sĩ biết số liệu đến từ thiết bị nào.
+
+<details><summary>Nội dung cũ</summary>
+
 ### P1-4. Tần số không gian giả định 1.5 / 6 / 18 cpd
 
 [`nso/config.py`](src/backend/nso/config.py) — `csf_frequencies_cpd`
@@ -202,8 +274,34 @@ trục log của ba tần số này; đổi tần số là đổi hết kết qu
 
 Ngoài ra AUC "chuẩn hoá về 0–100 so với đường phẳng 100" là quy ước mình tự đặt cho
 số đọc dễ, không phải định nghĩa AUC chuẩn của CSF.
+</details>
 
-### P1-5. Hằng số biến phenotype → thiết kế
+### P1-5. Hằng số biến phenotype → thiết kế — 🟡 ĐÃ TÁI CẤU TRÚC, CHƯA HIỆU CHỈNH
+
+Thầy nói bốn công thức cũ **không được dùng làm mô hình vật lý NSO chính thức** —
+không phải vì sai hướng, mà vì chúng **gộp hai tầng** làm một: "phenotype lâm sàng
+→ mục tiêu quang học" và "mục tiêu quang học → hình học gia công".
+
+Đã tách theo đúng kiến trúc thầy chỉ định:
+
+```
+Patient phenotype → Optical Modulation Target → NSO Profile → Geometry Projection
+```
+
+Tầng lâm sàng giờ **chỉ** xuất ra biến chuẩn hoá 0–1: `control_demand`,
+`visual_tolerance`, `contrast_reserve`, `peripheral_modulation`,
+`temporal_asymmetry`. Design Engine mới ánh xạ chúng sang D/H/FF của vùng A/B/C.
+
+Lý do thầy nêu, và là lý do đáng giá nhất: đổi sang **MR-8, PC, kính áp tròng hay
+đổi xưởng** thì tầng AI lâm sàng **không phải viết lại**.
+
+⚠️ Trọng số trong tầng lâm sàng **vẫn chưa hiệu chỉnh**. Cái đã đổi là chúng sinh
+ra một vector nhu cầu độc lập sản phẩm chứ không phải micromét — nên hiệu chỉnh lại
+không làm hỏng tầng hình học.
+
+<details><summary>Công thức cũ (đã bỏ)</summary>
+
+### P1-5 (cũ). Hằng số biến phenotype → thiết kế
 
 [`nso/design/synthesis.py`](src/backend/nso/design/synthesis.py), hệ số trong [`nso/config.py`](src/backend/nso/config.py) nhóm *Design synthesis coefficients*
 
@@ -224,6 +322,7 @@ phải cao `0.22 × SA + 0.6 × (1−CSF) + 0.9` µm.
 
 Ba dòng cuối (`diameter`, `height`, `fill_factor`, `jitter`) đặc biệt đáng ngờ vì
 chúng cho ra **kích thước vật lý thật** sẽ đi vào file gia công.
+</details>
 
 ### P1-6. Escalation khi refit
 
@@ -730,6 +829,47 @@ cần điền số là đường dẫn hoạt động.
 Ngoài ra `residual_astigmatism = |trụ khúc xạ| − loạn giác mạc` là **định nghĩa**,
 nên `corneal_astigmatism` hết chết.
 
+## 🔴 P1-21. Cách hình học vùng co giãn theo mục tiêu
+
+[`nso/config.py`](src/backend/nso/config.py) — nhóm *NSO three-zone architecture*
+
+**Bảng tham chiếu là số thật của thầy:**
+
+| Zone | Element size | Height | Fill factor |
+|---|---|---|---|
+| A | 22 µm | 2.2 µm | 38% |
+| B | 28 µm | 1.5 µm | 35% |
+| C | 32 × 16 µm | 1.0 µm | 28% |
+
+Mục tiêu quang học từng tier cũng là số thật: Low `1-3-2D`, Medium `3-5-4D`,
+High `5-8-6D`.
+
+**Nhưng những thứ sau vẫn là nội suy của mình:**
+
+- ⚙️ Ranh giới bán kính vùng A/B/C — thầy **không nêu**. Mình chia 0–4, 4–9, 9–16 mm.
+- ⚙️ Hình học co giãn thế nào khi mục tiêu lệch khỏi tier tham chiếu
+  (`zone_height_target_exponent` v.v.)
+- ⚙️ Vector nhu cầu ánh xạ sang hình học ra sao (`realized`, `trim`,
+  `contrast_relief`, trọng số ngoại vi)
+
+Thầy cũng cảnh báo rõ: `3-5-4D` **không phải** ba giá trị sag cố định, phải đi qua
+`Optical target → geometry transfer function → compensated manufacturing geometry`.
+Có test khẳng định `height ≠ target_d` cho mọi vùng.
+
+## 🔴 P1-22. Mô hình truyền quy trình
+
+[`nso/config.py`](src/backend/nso/config.py) — nhóm *Process transfer*
+
+Một dữ liệu duy nhất từ thầy: lớp phủ HC làm cấu trúc danh nghĩa **3.0 µm** chỉ
+còn **~1.8 µm** — tức retention **0.6**. Đã cài và kiểm chứng đúng con số.
+
+⚙️ Nhưng đó là **một quan sát đơn lẻ**, không phải đường cong đo qua dải quy trình.
+`diameter_growth = 0.05` và `fill_factor_growth = 0.08` thì hoàn toàn bịa.
+
+Điểm quan trọng về kiến trúc: thầy nhấn mạnh việc HC biến 3.0 thành 1.8 µm **thuộc
+về Manufacturing Compensation, không phải thuật toán AI fitting**. Có test khẳng
+định đổi hệ số bù trừ **không** làm đổi thiết kế.
+
 ## 🔴 P1-15. Khoảng "hợp lý" của 33 phép đo
 
 [`nso/config.py`](src/backend/nso/config.py) — `plausible_ranges`
@@ -820,7 +960,13 @@ này**, không phải của trọng số.
 | Eso bị bỏ qua | ✅ Đã sửa — chuẩn Morgan + Sheard |
 | P2-8 blue-noise giả | ✅ Đã sửa — Poisson-disk thật |
 | P1-20 scalarization | ✅ Đã sửa — Tchebycheff, 5/9 thiết kế |
-| Wavefront không vào thiết kế | 🟡 Đã nối, hệ số = 0 chờ thầy |
+| Wavefront không vào thiết kế | ✅ Đã có hệ số từ thầy (25–50% / 10–20% / ±5–10%) |
+| P0-2 hai kênh bị gộp | ✅ Đã tách — `BaseSurfaceProfile` / `NsoModulationProfile` |
+| P0-3 roll-off | ✅ Thầy chọn (b)+(c) — cửa sổ W(r) có biên |
+| P1-4 tần số CSF cứng | ✅ Đã sửa — schema đầy đủ, protocol đi theo phép đo |
+| P1-5 gộp hai tầng | ✅ Đã tách — vector nhu cầu 0–1 độc lập sản phẩm |
+| Kiến trúc 7 tầng | ✅ `nso/pipeline.py` — chạy được từng chặng |
+| Tên "myopia control %" | ✅ Đổi thành NSO Control Score (relative) |
 | P0-* và P1-* | 🔴 **Không đổi** — cần dữ liệu thật, không phải code |
 
 ### Lỗi input trơ (phát hiện 2026-08-21)

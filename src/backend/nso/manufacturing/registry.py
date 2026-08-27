@@ -13,7 +13,8 @@ from datetime import datetime, timezone
 from typing import Any, Dict
 
 from ..config import get_config
-from .geometry import microstructure_map, surface_map
+from .compensation import compensated_placement
+from .geometry import surface_map
 from .store import DesignStore, default_store
 
 # Opaque manufacturing segment codes. Their meaning lives in the vendor
@@ -128,10 +129,17 @@ class DesignRegistry:
         recipes = {r.eye: r for r in entry["recipes"]}
 
         if segment == "FS":
+            # Coordinates carrying the heights to CUT, not the design heights.
+            # The process removes roughly 40% of the height, so cutting the
+            # design value would leave the lens short of its optical target.
+            #
+            # Compensation is applied to each element rather than shipped as a
+            # separate table: a table would name zones and design heights,
+            # which is the design language this package exists to withhold.
             return {
                 "package_type": "front_surface_geometry",
-                "format": "element_placement/v1",
-                "eyes": {eye: microstructure_map(r, page=page)
+                "format": "element_placement/v2",
+                "eyes": {eye: compensated_placement(r, page=page)
                          for eye, r in recipes.items()},
             }
         if segment == "BS":

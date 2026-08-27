@@ -58,11 +58,16 @@ _clip100 = __import__("nso.features", fromlist=["clip100"]).clip100
 # Snapshots of the active config, kept for backwards compatibility. Engine code
 # reads ``CONFIG`` live; these do not follow a config swap.
 CSF_BANDS = CONFIG.csf_bands
-CSF_FREQUENCIES_CPD = CONFIG.csf_frequencies_cpd
+# Retired: frequencies now travel with each measurement rather than being a
+# global constant. Kept as the assumed-frequency fallback for old callers.
+from nso.csf import ASSUMED_FREQUENCIES_CPD as CSF_FREQUENCIES_CPD  # noqa: E402
 CANDIDATE_OFFSETS = CONFIG.candidate_offsets
 BINOCULAR_WEIGHT = CONFIG.binocular_weight
 SA_FUSION_TOLERANCE_D = CONFIG.sa_fusion_tolerance_d
-DENSITY_FUSION_TOLERANCE = CONFIG.density_fusion_tolerance
+# Renamed: the compared quantity is fill factor in percentage points, not
+# areal density per mm^2. See nso/config.py.
+DENSITY_FUSION_TOLERANCE = CONFIG.fill_fusion_tolerance_pct
+FILL_FUSION_TOLERANCE_PCT = CONFIG.fill_fusion_tolerance_pct
 LENS_INDEX = CONFIG.lens_index
 OPTIC_ZONE_DIAMETER_MM = CONFIG.optic_zone_diameter_mm
 BASE_CURVE_D = CONFIG.base_curve_d

@@ -36,8 +36,10 @@ from .clinical import (
     run_fitting,
 )
 from .config import CONFIG, EngineConfig, get_config, use_config
+from .csf import CsfMeasurement, from_triplet as csf_from_triplet
 from .design import (
     binocular_penalty,
+    binocular_weight,
     candidate_loss,
     design_for_eye,
     design_id_for,
@@ -73,6 +75,8 @@ from .manufacturing import (
     DesignRegistry,
     DesignStore,
     InMemoryDesignStore,
+    ProcessTransfer,
+    compensation_report,
     PostgresDesignStore,
     SQLiteDesignStore,
     default_store,
@@ -82,6 +86,7 @@ from .manufacturing import (
     surface_map,
 )
 from .patient import PRIMARY_GOALS, EyeInput, PatientInput
+from .pipeline import STAGES, PipelineResult, describe_pipeline, run_pipeline
 from .phenotype import PHENOTYPE_DOMAINS, grade, visual_phenotype
 from .predictors import (
     OutcomePrediction,
@@ -99,6 +104,7 @@ __version__ = "2.1.0"
 __all__ = [
     "EyeInput", "PatientInput", "DesignRecipe", "PRIMARY_GOALS",
     "CONFIG", "EngineConfig", "get_config", "use_config",
+    "CsfMeasurement", "csf_from_triplet",
     "FeatureVector", "patient_features", "design_features", "training_row",
     "ai_derived_indices", "csf_descriptors", "interocular_acuity_difference",
     "accommodative_demand_d", "out_of_range_measurements", "plausibility",
@@ -109,12 +115,15 @@ __all__ = [
     "Predictor", "OutcomePrediction", "RuleBasedPredictor",
     "SchemaMismatchError", "get_predictor", "register", "use_predictor",
     "design_for_eye", "generate_candidates", "candidate_loss",
-    "optimize_pair", "binocular_penalty", "pair_class", "design_id_for",
+    "optimize_pair", "binocular_penalty", "binocular_weight", "pair_class",
+    "design_id_for",
     "surface_map", "microstructure_map", "geometric_verification",
+    "compensation_report", "ProcessTransfer",
     "REGISTRY", "DesignRegistry", "DesignStore", "InMemoryDesignStore",
     "SQLiteDesignStore", "PostgresDesignStore", "default_store", "store_from_url",
     "SEGMENT_CODES", "VENDOR_SEGMENTS",
     "run_fitting", "clinical_only", "clinical_followup", "refit",
+    "run_pipeline", "describe_pipeline", "PipelineResult", "STAGES",
     "SUPPORT_LEVELS", "CLINICAL_ADVICE",
     "assert_no_design_leak", "DesignLeakError",
 ]

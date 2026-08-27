@@ -8,7 +8,7 @@ outcome or an explanation; none of it is a design parameter.
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import asdict, replace
 from typing import Any, Dict, List
 
 import nso_core as engine
@@ -176,8 +176,13 @@ def run_fitting(p: PatientInput, site: str | None = None) -> Dict[str, Any]:
             "OS": {"profile_label": "Personalized Functional Profile B"},
         },
         "binocular_pair": pair_label,
+        # NOT a validated efficacy probability. The supervisor's V2.1 baseline
+        # is explicit: until prototype MTF/PSF/CSF data and an axial-length
+        # clinical dataset exist, this is a relative score, and calling it a
+        # percentage of myopia control claims something the model cannot
+        # support. The name says what it is.
         "predicted": {
-            "myopia_control": _pct(mean("control")),
+            "nso_control_score": _pct(mean("control")),
             "visual_comfort": _pct(mean("comfort")),
             "adaptation": _pct(mean("adaptation")),
             "binocular_compatibility": binocular_compatibility,
@@ -199,6 +204,20 @@ def run_fitting(p: PatientInput, site: str | None = None) -> Dict[str, Any]:
             "overruled_monocular_choice": overruled,
         },
         "spatial_frequency_descriptors": csf_descriptors(p),
+        # The protocol travels with the numbers. Without it a clinician cannot
+        # tell an AUC computed at the instrument's own frequencies from one
+        # computed against an assumption the engine made.
+        "csf_protocol": (
+            {
+                "measured": True,
+                "device": p.csf().device,
+                "test_protocol": p.csf().test_protocol,
+                "spatial_frequency_cpd": p.csf().spatial_frequency_cpd,
+                "frequencies_assumed": p.csf().frequencies_assumed,
+            }
+            if p.csf_is_measured
+            else {"measured": False, "source": f"band: {p.csf_band}"}
+        ),
         "interocular_acuity_difference": interocular_acuity_difference(p),
         "selection_rationale": (
             "Lowest constrained multi-objective loss while maintaining required "
@@ -219,6 +238,13 @@ def run_fitting(p: PatientInput, site: str | None = None) -> Dict[str, Any]:
         "out_of_range_measurements": out_of_range,
         "measured_domains": measured,
         "credited_domains": credited,
+        # "Recorded" and "used" are different things, and a clinician who ran a
+        # VEP deserves to see which one happened.
+        "neurovisual_status": (
+            "interpretable" if p.has_interpretable_neurovisual
+            else "recorded_not_interpretable" if p.neurovisual_recorded
+            else "not_recorded"
+        ),
         "accommodative_demand_d": accommodative_demand_d(p),
         "recommended_follow_up": (
             "6 months" if confidence >= cfg.confidence_for_long_followup else "3 months"
@@ -230,7 +256,19 @@ def run_fitting(p: PatientInput, site: str | None = None) -> Dict[str, Any]:
         "engine": od_metrics["provenance"],
     }
 
+    # The two optical channels are stored as independent objects, as the V2.1
+    # baseline requires. Keeping them separate in the database is what stops a
+    # later reader from treating microstructure modulation as base-surface sag
+    # -- the conflation this release exists to undo.
     design = {
+        "base_surface_optical_profile": {
+            eye: asdict(recipe.base_surface)
+            for eye, recipe in (("OD", od_recipe), ("OS", os_recipe))
+        },
+        "nso_spatial_modulation_profile": {
+            eye: asdict(recipe.nso_modulation)
+            for eye, recipe in (("OD", od_recipe), ("OS", os_recipe))
+        },
         "design_id": design_id,
         "recipes": [od_recipe, os_recipe],
         "revision": 1,

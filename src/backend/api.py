@@ -22,7 +22,7 @@ API docs at http://127.0.0.1:8000/docs
 """
 
 import os
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import FastAPI, Header, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -93,6 +93,7 @@ def health():
         "feature_schema": v2.FeatureVector.SCHEMA_VERSION,
         "config_version": v2.get_config().version,
         "design_store": v2.REGISTRY.backend,
+        "pipeline": [stage["stage"] for stage in v2.describe_pipeline()],
     }
 
 
@@ -154,9 +155,27 @@ class PredictIn(BaseModel):
     csf_low: Optional[float] = None
     csf_mid: Optional[float] = None
     csf_high: Optional[float] = None
+    # Protocol, so the descriptors are computed at the frequencies the
+    # instrument actually used rather than at ones the engine assumed.
+    csf_frequencies_cpd: Optional[List[float]] = None
+    csf_device: str = "unspecified"
+    csf_test_protocol: str = "unspecified"
+    csf_scale: str = "index_0_100"
     vep: Optional[float] = None
+    vep_stimulus: str = "unspecified"
+    vep_amplitude_uv: Optional[float] = None
+    vep_latency_ms: Optional[float] = None
+    vep_interocular_difference_ms: Optional[float] = None
+    vep_z_score: Optional[float] = None
     erg: Optional[float] = None
+    erg_protocol: str = "unspecified"
+    erg_z_score: Optional[float] = None
     eye_tracking: Optional[float] = None
+    fixation_stability: Optional[float] = None
+    blink_rate: Optional[float] = None
+    vergence_stability: Optional[float] = None
+    pupil_dynamics: Optional[float] = None
+    gaze_distribution: Optional[float] = None
     hoa_rms: Optional[float] = None
     corneal_sa: Optional[float] = None
     coma: Optional[float] = None

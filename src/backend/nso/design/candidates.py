@@ -38,7 +38,7 @@ def candidate_metrics(
         m["acuity"] >= cfg.min_acuity
         and m["adaptation"] >= cfg.min_adaptation
         and m["manufacturability"] >= cfg.min_manufacturability
-        and cfg.sa_min_d <= recipe.sa_strength <= cfg.sa_max_d
+        and cfg.sa_min_d <= recipe.nso_peak_target_d <= cfg.sa_max_d
     )
     m["provenance"] = prediction.provenance()
     return m

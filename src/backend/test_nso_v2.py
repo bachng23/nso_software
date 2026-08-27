@@ -273,27 +273,55 @@ def test_design_recipe_is_produced_for_both_eyes():
 
 def test_design_geometry_stays_physically_plausible():
     for r in v2.run_fitting(patient())["design"]["recipes"]:
-        assert 1.5 <= r.sa_strength <= 9.0
-        assert 15 <= r.microstructure_diameter_um <= 45
-        assert 0.5 <= r.microstructure_height_um <= 4.0
-        assert 0 < r.fill_factor_pct <= 60
-        assert r.spatial_jitter_deg > 0
+        assert 1.5 <= r.nso_peak_target_d <= 9.0
+        assert 0 < r.mean_fill_factor_pct <= 60
+        assert r.nso_modulation.spatial_jitter_deg > 0
         assert 0.3 <= r.target_mtf_modulation <= 1.0
+        for zone in r.nso_modulation.zones:
+            assert 10 <= zone.element_diameter_um <= 50
+            assert 0.3 <= zone.element_height_um <= 4.0
+            assert 10 <= zone.fill_factor_pct <= 55
 
 
 def test_high_visual_stress_reduces_optical_load():
+    """The optical TARGET is a tier property, so stress shows up in the
+    realized geometry rather than in the target label."""
     calm = v2.run_fitting(patient(visual_stress_score=1))["design"]["recipes"][0]
     stressed = v2.run_fitting(patient(visual_stress_score=10))["design"]["recipes"][0]
-    assert stressed.sa_strength < calm.sa_strength
+    assert (stressed.nso_modulation.zone("A").element_height_um
+            < calm.nso_modulation.zone("A").element_height_um)
 
 
-def test_anisometropia_produces_asymmetric_pair():
-    sym = v2.run_fitting(patient())["clinical"]["binocular_pair"]
-    asym = v2.run_fitting(
+def test_anisometropia_gives_the_eyes_different_base_surfaces():
+    """The prescriptions differ, definitionally."""
+    od, os_ = v2.run_fitting(
         patient(od={"sphere": -1.0, "axial_length": 23.4},
-                os={"sphere": -7.0, "axial_length": 26.4}))["clinical"]["binocular_pair"]
-    assert sym == "Symmetric"
-    assert asym in ("Mildly Asymmetric", "Asymmetric")
+                os={"sphere": -7.0, "axial_length": 26.4}))["design"]["recipes"]
+    assert od.base_surface.sphere != os_.base_surface.sphere
+
+
+def test_the_joint_optimizer_pulls_an_anisometropic_pair_together():
+    """What the binocular penalty is for.
+
+    Fitted independently, these two eyes would receive markedly different
+    coverage. Chosen as a pair, the optimizer trades some monocular optimality
+    to keep the two lenses close enough to fuse — so the RESULT of a working
+    penalty is a more symmetric pair, not a less symmetric one.
+    """
+    p = patient(od={"sphere": -1.0, "axial_length": 23.4},
+                os={"sphere": -7.0, "axial_length": 26.4})
+    indices = v2.ai_derived_indices(p)
+
+    # Each eye's own best, ignoring the other.
+    od_alone = v2.generate_candidates(p, "OD", indices)[0]["recipe"]
+    os_alone = v2.generate_candidates(p, "OS", indices)[0]["recipe"]
+    apart = abs(od_alone.mean_fill_factor_pct - os_alone.mean_fill_factor_pct)
+
+    # The pair the joint optimizer actually chooses.
+    od, os_ = v2.run_fitting(p)["design"]["recipes"]
+    together = abs(od.mean_fill_factor_pct - os_.mean_fill_factor_pct)
+
+    assert together < apart, "the binocular penalty is not pulling the pair together"
 
 
 def test_candidates_are_ranked_by_loss_and_first_is_selected():
@@ -342,8 +370,8 @@ def test_design_id_carries_no_optical_information():
     did = v2.clinical_only(patient())["design_id"]
     design = v2.REGISTRY._get(did)
     for r in design["recipes"]:
-        assert str(r.sa_strength) not in did
-        assert str(int(r.fill_factor_pct)) not in did
+        assert str(r.nso_peak_target_d) not in did
+        assert str(int(r.mean_fill_factor_pct)) not in did
 
 
 # --------------------------------------------------------------------------- #
@@ -409,7 +437,7 @@ def test_each_vendor_receives_only_its_own_segment(client, monkeypatch):
 
     front = pull("FS")
     back = pull("BS")
-    assert front["format"] == "element_placement/v1"
+    assert front["format"] == "element_placement/v2"
     assert back["format"] == "sag_map/v1"
     # Each vendor gets its own geometry and only its own.
     assert front["eyes"]["OD"]["elements"]
@@ -577,12 +605,21 @@ def test_binocular_penalty_is_zero_for_identical_designs():
 
 
 def test_binocular_penalty_grows_with_interocular_difference():
-    idx = v2.ai_derived_indices(patient())
-    a, b = v2.run_fitting(patient(
-        od={"sphere": -1.0, "axial_length": 23.4},
-        os={"sphere": -7.0, "axial_length": 26.4}))["design"]["recipes"]
-    same = v2.run_fitting(patient())["design"]["recipes"][0]
-    assert v2._binocular_penalty(a, b, idx) > v2._binocular_penalty(same, same, idx)
+    """Measured on candidates rather than on a fitted pair: the fitted pair has
+    already had the penalty applied to it, so it is the wrong thing to test
+    the penalty with."""
+    p = patient()
+    idx = v2.ai_derived_indices(p)
+    candidates = sorted(
+        v2.generate_candidates(p, "OD", idx),
+        key=lambda c: (c["recipe"].nso_peak_target_d,
+                       c["recipe"].mean_fill_factor_pct),
+    )
+    gentlest = candidates[0]["recipe"]
+    strongest = candidates[-1]["recipe"]
+
+    assert (v2._binocular_penalty(gentlest, strongest, idx)
+            > v2._binocular_penalty(gentlest, gentlest, idx))
 
 
 def test_binocular_compatibility_falls_when_the_pair_costs_more():
@@ -675,9 +712,11 @@ def test_surface_map_is_a_coordinate_grid():
 
 
 def test_surface_sag_is_physically_plausible():
-    """A spectacle lens does not have millimetres of sag from its HO term."""
+    """Sag over a 65 mm blank is a few millimetres from the prescription
+    alone; what must not happen is the higher-order term adding millimetres
+    on top of that."""
     zs = [pt[2] for pt in v2.surface_map(_recipe())["points"]]
-    assert max(abs(z) for z in zs) < 3.0
+    assert max(abs(z) for z in zs) < 6.0
 
 
 def test_surface_sag_is_zero_at_the_centre():
@@ -686,11 +725,16 @@ def test_surface_sag_is_zero_at_the_centre():
     assert all(pt[2] == 0.0 for pt in centre)
 
 
-def test_stronger_design_produces_more_sag():
+def test_the_microstructure_does_not_reach_the_sag_map():
+    """The two channels are independent. Changing what the microstructure asks
+    for must not move the back surface -- folding the NSO modulation into the
+    sag as a spherical-aberration term is precisely the error the channel split
+    exists to prevent."""
     weak = v2.run_fitting(patient(visual_stress_score=10))["design"]["recipes"][0]
     strong = v2.run_fitting(patient(visual_stress_score=0))["design"]["recipes"][0]
-    span = lambda r: max(pt[2] for pt in v2.surface_map(r)["points"])
-    assert span(strong) > span(weak)
+    assert (weak.nso_modulation.zone("A").element_height_um
+            != strong.nso_modulation.zone("A").element_height_um)
+    assert v2.surface_map(weak)["points"] == v2.surface_map(strong)["points"]
 
 
 def test_microstructure_map_is_paginated():
@@ -703,10 +747,15 @@ def test_microstructure_map_is_paginated():
     assert page1["elements"] != page0["elements"]
 
 
-def test_microstructure_elements_stay_inside_the_optic_zone():
-    semi = v2.OPTIC_ZONE_DIAMETER_MM / 2.0
-    for x, y, _d, _h in v2.microstructure_map(_recipe())["elements"]:
-        assert x * x + y * y <= semi * semi + 1e-6
+def test_microstructure_elements_stay_inside_their_zone_annulus():
+    """Each zone is an annulus with its own element size and fill factor."""
+    recipe = _recipe()
+    page = v2.microstructure_map(recipe, page=0)
+    zone = recipe.nso_modulation.zone(page["zone"])
+    for x, y, _d, _l, _h in page["elements"]:
+        r2 = x * x + y * y
+        assert r2 <= zone.outer_radius_mm ** 2 + 1e-6
+        assert r2 >= zone.inner_radius_mm ** 2 - 1e-6
 
 
 def test_microstructure_map_is_reproducible_for_a_design():
@@ -811,9 +860,9 @@ def test_refit_produces_a_new_linked_design():
 def test_refit_escalates_the_design_when_progressing():
     p = patient()
     old = v2.clinical_only(p)["design_id"]
-    before = v2.REGISTRY._get(old)["recipes"][0].sa_strength
+    before = v2.REGISTRY._get(old)["recipes"][0].nso_modulation.zone("A").element_height_um
     new = v2.refit(p, old, 25.1, 25.55, 12)
-    after = v2.REGISTRY._get(new["design_id"])["recipes"][0].sa_strength
+    after = v2.REGISTRY._get(new["design_id"])["recipes"][0].nso_modulation.zone("A").element_height_um
     assert new["refit"]["progression_band"] == "Progressing"
     assert after > before
 

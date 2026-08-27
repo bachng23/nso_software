@@ -33,10 +33,15 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Protocol, runtime_checkable
 from urllib.parse import urlparse
 
-from dataclasses import asdict
+from dataclasses import fields as dataclass_fields
 
 from ..config import get_config
-from ..recipe import DesignRecipe
+from ..recipe import (
+    BaseSurfaceProfile,
+    DesignRecipe,
+    NsoModulationProfile,
+    ZoneGeometry,
+)
 
 JOB_SERIAL_COUNTER = "job_serial"
 
@@ -45,19 +50,41 @@ JOB_SERIAL_COUNTER = "job_serial"
 # JSON round-trip for entries containing DesignRecipe objects
 # --------------------------------------------------------------------------- #
 
-_RECIPE_TAG = "__design_recipe__"
+# A recipe is a tree of dataclasses -- the two channel profiles, and the zone
+# geometry inside one of them -- so each type is tagged on the way out and
+# rebuilt on the way in. Tagging by type rather than flattening means the shape
+# a caller stored is the shape it gets back, at any nesting depth.
+_TAG = "__nso_type__"
+
+_TAGGED_TYPES = {
+    "DesignRecipe": DesignRecipe,
+    "BaseSurfaceProfile": BaseSurfaceProfile,
+    "NsoModulationProfile": NsoModulationProfile,
+    "ZoneGeometry": ZoneGeometry,
+}
 
 
 class _EntryEncoder(json.JSONEncoder):
     def default(self, obj: Any) -> Any:
-        if isinstance(obj, DesignRecipe):
-            return {_RECIPE_TAG: asdict(obj)}
+        name = type(obj).__name__
+        if name in _TAGGED_TYPES:
+            return {_TAG: name, "fields": _shallow_fields(obj)}
         return super().default(obj)
 
 
+def _shallow_fields(obj: Any) -> Dict[str, Any]:
+    """One level of fields, leaving nested dataclasses for the encoder.
+
+    ``dataclasses.asdict`` recurses and turns the whole tree into plain dicts,
+    which loses the type tags the decoder needs.
+    """
+    return {f.name: getattr(obj, f.name) for f in dataclass_fields(obj)}
+
+
 def _decode_entry(obj: Dict[str, Any]) -> Any:
-    if _RECIPE_TAG in obj and len(obj) == 1:
-        return DesignRecipe(**obj[_RECIPE_TAG])
+    tag = obj.get(_TAG)
+    if tag in _TAGGED_TYPES:
+        return _TAGGED_TYPES[tag](**obj["fields"])
     return obj
 
 

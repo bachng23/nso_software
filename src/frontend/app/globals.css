@@ -60,11 +60,13 @@ body {
 .field label { font: 500 12px "Inter"; color: var(--warm); }
 .field .unit { color: var(--ash); font-weight: 400; }
 .field input[type="number"],
+.field input[type="text"],
 .field select {
   background: var(--card); border: 1px solid var(--muted-border); border-radius: 6px;
   padding: 9px 12px; font: 400 14px "Inter"; color: var(--ink); width: 100%;
 }
 .field input[type="number"]:focus,
+.field input[type="text"]:focus,
 .field select:focus {
   outline: none; border-color: var(--cyan);
   box-shadow: 0 0 0 2px rgba(59,166,241,0.28);

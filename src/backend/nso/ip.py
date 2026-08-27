@@ -13,6 +13,21 @@ from typing import Any
 FORBIDDEN_KEY_FRAGMENTS = (
     "sa_strength",
     "sa_profile",
+    # Two-channel naming: the NSO modulation target and the base surface's own
+    # aberration are both Design IP, and so is the per-zone geometry.
+    "nso_peak_target",
+    "nso_mean_fill",
+    "nso_temporal",
+    "nso_spatial",
+    "nso_entropy",
+    "aspheric_sa",
+    "zone_target",
+    "zone_height",
+    "zone_diameter",
+    "element_height",
+    "element_diameter",
+    "height_retention",
+    "process_transfer",
     "microstructure",
     "fill_factor",
     "spatial_density",

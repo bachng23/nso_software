@@ -27,17 +27,17 @@ def binocular_penalty(
 ) -> float:
     """0-1 cost of fusing these two designs. 0 = perfectly compatible."""
     cfg = get_config()
-    sa_excess = max(0.0, abs(od.sa_strength - os_.sa_strength) - cfg.sa_fusion_tolerance_d)
-    dens_excess = max(
+    sa_excess = max(0.0, abs(od.nso_peak_target_d - os_.nso_peak_target_d) - cfg.sa_fusion_tolerance_d)
+    fill_excess = max(
         0.0,
-        abs(od.spatial_density_per_mm2 - os_.spatial_density_per_mm2)
-        - cfg.density_fusion_tolerance,
+        abs(od.mean_fill_factor_pct - os_.mean_fill_factor_pct)
+        - cfg.fill_fusion_tolerance_pct,
     )
     mtf_diff = abs(od.target_mtf_modulation - os_.target_mtf_modulation)
 
     raw = (
         0.45 * norm(sa_excess, 0.0, 3.0)
-        + 0.25 * norm(dens_excess, 0.0, 120.0)
+        + 0.25 * norm(fill_excess, 0.0, cfg.fill_fusion_span_pct)
         + 0.30 * norm(mtf_diff, 0.0, 0.25)
     )
     # An eye that already fuses poorly tolerates less optical disparity.
@@ -49,20 +49,38 @@ def pair_class(od: DesignRecipe, os_: DesignRecipe) -> str:
     """Clinical label for the pair. Shares the optimizer's tolerances so the
     label and the penalty can never disagree (ASSUMPTIONS P2-4)."""
     cfg = get_config()
-    delta_sa = abs(od.sa_strength - os_.sa_strength)
-    delta_density = abs(od.spatial_density_per_mm2 - os_.spatial_density_per_mm2)
-    if delta_sa < cfg.sa_fusion_tolerance_d and delta_density < cfg.density_fusion_tolerance:
+    delta_sa = abs(od.nso_peak_target_d - os_.nso_peak_target_d)
+    delta_fill = abs(od.mean_fill_factor_pct - os_.mean_fill_factor_pct)
+    if delta_sa < cfg.sa_fusion_tolerance_d and delta_fill < cfg.fill_fusion_tolerance_pct:
         return "Symmetric"
     if delta_sa < cfg.mild_sa_ceiling:
         return "Mildly Asymmetric"
     return "Asymmetric"
 
 
+def binocular_weight(indices: Dict[str, float]) -> float:
+    """w_B: how heavily the pair-fusion term counts for THIS patient.
+
+    This is where binocular status belongs. A patient with a large phoria and
+    weak reserves should have fusion weighted more heavily than a comfortably
+    compensated one, and that is a statement about priorities -- the cost
+    function -- rather than about optics. Letting phoria move the optical
+    target instead would bake a binocular finding into the lens design, which
+    is the shape the V2.1 baseline rules out.
+
+    Because it is a weight, recalibrating it when clinical data arrive touches
+    one number and leaves the optical engine alone.
+    """
+    cfg = get_config()
+    load = indices["binocular_load"] / 100.0
+    return cfg.binocular_weight * (1.0 + cfg.binocular_weight_load_gain * load)
+
+
 def optimize_pair(
     p: PatientInput, indices: Dict[str, float]
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Choose the OD/OS pair minimizing mean monocular loss + binocular cost."""
-    cfg = get_config()
+    w_b = binocular_weight(indices)
     od_candidates = generate_candidates(p, "OD", indices)
     os_candidates = generate_candidates(p, "OS", indices)
 
@@ -71,7 +89,7 @@ def optimize_pair(
         for os_ in os_candidates:
             penalty = binocular_penalty(od["recipe"], os_["recipe"], indices)
             mono = (od["metrics"]["loss"] + os_["metrics"]["loss"]) / 2.0
-            joint = mono + cfg.binocular_weight * penalty
+            joint = mono + w_b * penalty
             feasible = od["metrics"]["feasible"] and os_["metrics"]["feasible"]
             scored.append(
                 {
