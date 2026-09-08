@@ -134,11 +134,10 @@ _INDEX_LABELS = [
 ]
 
 _PREDICTED_LABELS = [
-    ("nso_control_score", "NSO Control Score (relative)"),
+    ("myopia_management_fit", "Myopia Management Fit"),
     ("visual_comfort", "Predicted visual comfort"),
     ("adaptation", "Predicted adaptation"),
     ("binocular_compatibility", "Predicted binocular compatibility"),
-    ("dynamic_robustness", "Predicted dynamic robustness"),
 ]
 
 
@@ -196,16 +195,15 @@ def build_report(inputs, r, followup=None):
         ["Manufacturing status", str(r["manufacturing_status"])],
     ]))
     s.append(Paragraph(
-        "The optical design recipe is held server-side under the Design ID above and "
-        "is not reproduced in this report.", _SMALL))
+        "The authorized design record is held securely under the Design ID above.", _SMALL))
 
     s.append(Paragraph("PREDICTED PERFORMANCE", _CAP))
     s.append(_kv([[label, f"{r['predicted'][key]}%"] for key, label in _PREDICTED_LABELS]))
 
     s.append(Paragraph("SELECTION RATIONALE", _CAP))
     s.append(Paragraph(
-        f"AI selected design: Candidate {r['selected_candidate']['OD']} (OD) / "
-        f"{r['selected_candidate']['OS']} (OS). {r['selection_rationale']}", _BODY))
+        str(r.get("clinical_recommendation", "Recommendation ready for clinical review")),
+        _BODY))
     s.append(Spacer(1, 5))
     for line in r["explainable_summary"]:
         s.append(Paragraph(f"\u2022 {line}", _BODY))
@@ -214,8 +212,7 @@ def build_report(inputs, r, followup=None):
     s.append(_kv([
         ["Prediction confidence", f"{r['prediction_confidence']}%"],
         ["Recommended follow-up", str(r["recommended_follow_up"])],
-        ["Measured optional domains",
-         ", ".join(k.replace("_", " ") for k, v in r["measured_domains"].items() if v) or "none"],
+        ["Clinical measurement status", str(r.get("neurovisual_status", "not recorded"))],
     ]))
 
     if followup:

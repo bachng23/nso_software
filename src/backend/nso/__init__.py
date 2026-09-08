@@ -32,6 +32,8 @@ from .clinical import (
     SUPPORT_LEVELS,
     clinical_followup,
     clinical_only,
+    public_clinical,
+    public_clinical_only,
     refit,
     run_fitting,
 )
@@ -122,7 +124,8 @@ __all__ = [
     "REGISTRY", "DesignRegistry", "DesignStore", "InMemoryDesignStore",
     "SQLiteDesignStore", "PostgresDesignStore", "default_store", "store_from_url",
     "SEGMENT_CODES", "VENDOR_SEGMENTS",
-    "run_fitting", "clinical_only", "clinical_followup", "refit",
+    "run_fitting", "clinical_only", "public_clinical", "public_clinical_only",
+    "clinical_followup", "refit",
     "run_pipeline", "describe_pipeline", "PipelineResult", "STAGES",
     "SUPPORT_LEVELS", "CLINICAL_ADVICE",
     "assert_no_design_leak", "DesignLeakError",

@@ -507,6 +507,12 @@ KNOWN_INERT = {
     "computer_working_distance": "same as near_working_distance",
     "corneal_astigmatism": "needs an optical rule from the supervisor",
     "corneal_eccentricity": "needs an optical rule from the supervisor",
+    "nra": "recorded for longitudinal calibration; no validated decision rule yet",
+    "pra": "recorded for longitudinal calibration; no validated decision rule yet",
+    "bcc": "recorded for longitudinal calibration; no validated decision rule yet",
+    "mem": "recorded for longitudinal calibration; no validated decision rule yet",
+    "fixation_disparity": "recorded for longitudinal calibration; no validated decision rule yet",
+    "symptom_questionnaire_score": "recorded for longitudinal calibration; instrument not specified",
 }
 
 # Plausible alternative values, one per clinical field.
@@ -521,6 +527,12 @@ INPUT_PROBES = {
     "stereoacuity": 200.0,
     "amplitude_of_accommodation": 6.0,
     "accommodative_facility": 4.0,
+    "nra": 2.0,
+    "pra": -2.0,
+    "bcc": 0.75,
+    "mem": 0.75,
+    "fixation_disparity": 1.0,
+    "symptom_questionnaire_score": 12.0,
     "near_working_distance": 22.0,
     "computer_working_distance": 70.0,
     "typical_working_distance": 28.0,

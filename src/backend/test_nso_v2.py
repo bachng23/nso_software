@@ -349,9 +349,9 @@ def test_candidate_comparison_exposes_outcomes_not_parameters():
 
 def test_design_id_format():
     did = v2.clinical_only(patient())["design_id"]
-    assert did.startswith("NSO-P")
-    assert len(did) == len("NSO-P247A")
-    assert did[5:8].isdigit() and did[8].isalpha()
+    assert did.startswith("NSO-")
+    assert len(did) == len("NSO-") + 24
+    assert all(c in "0123456789ABCDEF" for c in did[4:])
 
 
 def test_design_id_is_deterministic_for_the_same_patient():
@@ -380,6 +380,7 @@ def test_design_id_carries_no_optical_information():
 
 def test_submit_returns_a_job_handle_not_a_recipe(client):
     did = client.post("/api/predict", json=quick_payload()).json()["design_id"]
+    assert client.post("/api/design/approve", json={"design_id": did}).status_code == 200
     resp = client.post("/api/manufacturing/submit", json={"design_id": did})
     assert resp.status_code == 200
     _assert_clean(resp.text)
@@ -397,6 +398,7 @@ def test_submit_rejects_an_unknown_design(client):
 
 def test_submit_splits_the_work_across_vendors(client):
     did = client.post("/api/predict", json=quick_payload()).json()["design_id"]
+    assert client.post("/api/design/approve", json={"design_id": did}).status_code == 200
     segments = client.post("/api/manufacturing/submit", json={"design_id": did}).json()["segments"]
     assert {s["segment"] for s in segments} == set(v2.SEGMENT_CODES)
     # The clinic-facing response must not describe what each segment IS.
@@ -854,7 +856,8 @@ def test_refit_produces_a_new_linked_design():
     new = v2.refit(p, old, 25.1, 25.55, 12)
     assert new["design_id"] != old
     assert new["refit"]["previous_design_id"] == old
-    assert new["refit"]["revision"] == 2
+    assert new["refit"]["revision"] == 1
+    assert new["design_id"] == old + "-R1"
 
 
 def test_refit_escalates_the_design_when_progressing():

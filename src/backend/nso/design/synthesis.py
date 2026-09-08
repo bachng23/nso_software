@@ -297,7 +297,7 @@ def design_for_eye(
         al=eye.axial_length,
         myopia=eye.spherical_equivalent,
         pupil=p.photopic_pupil,
-        near_hours=p.near_hours + 0.5 * p.digital_hours,
+        near_hours=p.near_hours,
         outdoor_hours=p.outdoor_hours,
         csf_score=p.csf_value(),
         comfort_score=p.comfort_value(),
