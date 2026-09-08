@@ -21,12 +21,14 @@ Run (API only — the Next.js frontend calls it):
 API docs at http://127.0.0.1:8000/docs
 """
 
+import hashlib
+import json
 import os
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, Header, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 import nso as v2
 import report
@@ -116,6 +118,7 @@ class EyeIn(BaseModel):
 
 
 class PredictIn(BaseModel):
+    patient_id: Optional[str] = None
     # -- Tier 1: Quick Fitting ---------------------------------------------
     age: float
     od: EyeIn
@@ -124,7 +127,7 @@ class PredictIn(BaseModel):
     near_phoria: float = 0.0
     npc: float = 7.0
     accommodative_lag: float = 0.75
-    csf_band: str = "Mid"
+    csf_band: str = "Normal"
     visual_stress_score: float = 3.0
     near_hours: float = 6.0
     digital_hours: float = 4.0
@@ -140,8 +143,14 @@ class PredictIn(BaseModel):
     stereoacuity: Optional[float] = None
     ocular_dominance: str = "Balanced"
     binocular_balance: str = "Normal"
+    fixation_disparity: Optional[float] = None
+    symptom_questionnaire_score: Optional[float] = None
     amplitude_of_accommodation: Optional[float] = None
     accommodative_facility: Optional[float] = None
+    nra: Optional[float] = None
+    pra: Optional[float] = None
+    bcc: Optional[float] = None
+    mem: Optional[float] = None
     near_working_distance: Optional[float] = None
     computer_working_distance: Optional[float] = None
     visual_comfort_score: Optional[float] = None
@@ -196,11 +205,26 @@ class PredictIn(BaseModel):
 
 
 class FollowupIn(BaseModel):
-    baseline_al: float
-    followup_al: float
+    design_id: Optional[str] = None
+    patient_id: Optional[str] = None
+    baseline_al: Optional[float] = None
+    followup_al: Optional[float] = None
+    baseline_od_al: Optional[float] = None
+    followup_od_al: Optional[float] = None
+    baseline_os_al: Optional[float] = None
+    followup_os_al: Optional[float] = None
     interval_months: int
     # Clinical support level, not the internal design tier.
     current_support_level: str = "Level 2"
+    baseline_od_refraction: Optional[EyeIn] = None
+    followup_od_refraction: Optional[EyeIn] = None
+    baseline_os_refraction: Optional[EyeIn] = None
+    followup_os_refraction: Optional[EyeIn] = None
+    baseline_comfort: Optional[float] = None
+    current_comfort: Optional[float] = None
+    visual_stress_score: Optional[float] = None
+    average_wear_hours: Optional[float] = None
+    compliance: Optional[str] = None
 
 
 class FollowupReportIn(PredictIn):
@@ -220,11 +244,61 @@ class ManufacturingPackageIn(BaseModel):
     design_id: str
     segment: str   # opaque segment code: FS / BS / AV
     page: int = 0  # element-placement maps are paginated
+    oem_id: str = "default"
+    capability_profile_version: str = "1.0"
+
+
+class ApprovalIn(BaseModel):
+    design_id: str
+    actor: str = "clinician"
+
+
+class ClinicalResponse(BaseModel):
+    """Browser-visible allowlist; unknown internal fields are rejected."""
+    model_config = ConfigDict(extra="forbid")
+    design_id: str
+    patient_id: str
+    clinical_dataset_id: str
+    phenotype: Dict[str, Any]
+    indices: Dict[str, Any]
+    eyes: Dict[str, Any]
+    binocular_pair: str
+    predicted: Dict[str, Any]
+    spatial_frequency_descriptors: Dict[str, Any]
+    csf_protocol: Dict[str, Any]
+    interocular_acuity_difference: Any
+    explainable_summary: List[str]
+    prediction_confidence: int
+    out_of_range_measurements: List[Dict[str, Any]]
+    neurovisual_status: str
+    accommodative_demand_d: Optional[float]
+    recommended_follow_up: str
+    manufacturing_status: str
+    primary_goal: str
+    clinical_recommendation: str
+    refit: Optional[Dict[str, Any]] = None
+
+
+class FollowupResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    delta_al: float
+    annualized_delta_al: float
+    advice: str
+    current_support_level: str
+    next_support_level: str
+    refit_required: bool
+    progression_band: str
+    eyes: Dict[str, Any]
+    comfort_change: Optional[float]
+    action_class: str
+    responder_status: str
+    exposure: Dict[str, Any]
 
 
 class VerificationIn(BaseModel):
     """As-manufactured measurements submitted by the verification station."""
     design_id: str
+    manufacturing_id: Optional[str] = None
     sag_error_mm: Optional[float] = None
     element_height_error_mm: Optional[float] = None
     element_position_error_mm: Optional[float] = None
@@ -241,21 +315,49 @@ class RefitIn(PredictIn):
 
 def _clinical(inp: PredictIn) -> dict:
     """Run the fitting and return the screened clinical payload."""
-    result = v2.clinical_only(inp.to_patient())
+    result = v2.public_clinical_only(inp.to_patient(), patient_id=inp.patient_id)
     return result
 
 
-@app.post("/api/predict")
+@app.post("/api/predict", response_model=ClinicalResponse)
 def predict(inp: PredictIn):
     """Clinical layer only. The design recipe stays on the server."""
     return _clinical(inp)
 
 
-@app.post("/api/followup")
+@app.post("/api/followup", response_model=FollowupResponse)
 def followup(inp: FollowupIn):
-    return v2.clinical_followup(
-        inp.baseline_al, inp.followup_al, inp.interval_months, inp.current_support_level
+    baseline = inp.baseline_al if inp.baseline_al is not None else inp.baseline_od_al
+    current = inp.followup_al if inp.followup_al is not None else inp.followup_od_al
+    if baseline is None or current is None:
+        raise HTTPException(status_code=422, detail="Baseline and follow-up axial length are required")
+    result = v2.clinical_followup(
+        baseline, current, inp.interval_months, inp.current_support_level,
+        baseline_od_al=inp.baseline_od_al, followup_od_al=inp.followup_od_al,
+        baseline_os_al=inp.baseline_os_al, followup_os_al=inp.followup_os_al,
+        baseline_comfort=inp.baseline_comfort, current_comfort=inp.current_comfort,
+        visual_stress_score=inp.visual_stress_score,
+        average_wear_hours=inp.average_wear_hours, compliance=inp.compliance,
     )
+    if inp.design_id:
+        outcome_id = "OUT-" + hashlib.sha256(
+            json.dumps(inp.model_dump(), sort_keys=True, default=str).encode()
+        ).hexdigest()[:20].upper()
+        v2.REGISTRY._record_outcome(outcome_id, inp.design_id, {
+            "outcome_id": outcome_id,
+            "design_id": inp.design_id,
+            "patient_id": inp.patient_id,
+            "raw": inp.model_dump(),
+            "derived": result,
+        })
+    return result
+
+
+@app.post("/api/design/approve")
+def approve_design(inp: ApprovalIn):
+    if not v2.REGISTRY.known(inp.design_id):
+        raise HTTPException(status_code=404, detail="Unknown design ID")
+    return v2.REGISTRY._approve(inp.design_id, actor=inp.actor)
 
 
 # --------------------------------------------------------------------------- #
@@ -271,6 +373,8 @@ def manufacturing_submit(inp: ManufacturingSubmitIn):
     """
     if not v2.REGISTRY.known(inp.design_id):
         raise HTTPException(status_code=404, detail="Unknown design ID")
+    if not v2.REGISTRY._is_approved(inp.design_id):
+        raise HTTPException(status_code=409, detail="Design must be approved before manufacturing")
     job = v2.REGISTRY.submit_to_manufacturing(inp.design_id, site=inp.site)
     v2.assert_no_design_leak(job)
     return job
@@ -287,12 +391,14 @@ def manufacturing_package(
     key, and each segment carries only the geometry its own process step
     executes — never the full recipe or the patient phenotype behind it.
     """
-    _authorize_vendor(x_api_key, inp.segment)
+    role = _authorize_vendor(x_api_key, inp.segment)
     if not v2.REGISTRY.known(inp.design_id):
         raise HTTPException(status_code=404, detail="Unknown design ID")
     try:
         return v2.REGISTRY.manufacturing_segments(
-            inp.design_id, inp.segment, page=inp.page
+            inp.design_id, inp.segment, page=inp.page,
+            oem_id=role,
+            capability_version=inp.capability_profile_version,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -312,22 +418,26 @@ def manufacturing_verify(inp: VerificationIn, x_api_key: str = Header(default=""
         raise HTTPException(status_code=404, detail="Unknown design ID")
     measured = {
         k: val for k, val in inp.model_dump().items()
-        if k != "design_id" and val is not None
+        if k not in ("design_id", "manufacturing_id") and val is not None
     }
-    return v2.geometric_verification(inp.design_id, measured)
+    return v2.geometric_verification(
+        inp.design_id, measured, manufacturing_id=inp.manufacturing_id
+    )
 
 
-@app.post("/api/refit")
+@app.post("/api/refit", response_model=ClinicalResponse)
 def refit(inp: RefitIn):
     """Closed loop: clinical feedback produces a new personalized design."""
     try:
-        return v2.refit(
+        result = v2.public_clinical(v2.refit(
             inp.to_patient(),
             inp.previous_design_id,
             inp.baseline_al,
             inp.followup_al,
             inp.interval_months,
-        )
+        ))
+        v2.REGISTRY._audit("clinical_response_generated", result["design_id"])
+        return result
     except KeyError:
         raise HTTPException(status_code=404, detail="Unknown previous design ID")
 

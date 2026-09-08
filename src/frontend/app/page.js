@@ -17,8 +17,8 @@ const RESULT_TIERS = {
 };
 
 const PRIMARY_GOALS = [
-  "Myopia Management", "Digital Visual Comfort", "Reading", "Near Work",
-  "Presbyopia", "Driving", "Night Vision", "Sports Vision", "General Visual Comfort",
+  "Myopia Management", "Visual Comfort", "Digital / Near-work Comfort",
+  "Binocular Visual Support", "Contrast Optimization", "Balanced Optimization",
 ];
 
 const INDEX_LABELS = [
@@ -33,17 +33,15 @@ const INDEX_LABELS = [
 ];
 
 const PREDICTED_LABELS = [
-  ["nso_control_score", "NSO CONTROL SCORE"],
+  ["myopia_management_fit", "MYOPIA MANAGEMENT FIT"],
   ["visual_comfort", "VISUAL COMFORT"],
   ["adaptation", "ADAPTATION"],
   ["binocular_compatibility", "BINOCULAR COMPAT."],
-  ["dynamic_robustness", "DYNAMIC ROBUSTNESS"],
 ];
 
 // Kept next to the marked fields so the two cannot drift apart.
 const PENDING_HINT =
-  "Recorded, and the engine has a path for it, but its coefficient is set to " +
-  "zero pending clinical sign-off — so it does not change this design yet.";
+  "Recorded for research review; it does not affect the current recommendation.";
 
 const scoreLabel = (x) => (x >= 80 ? "Excellent" : x >= 65 ? "Good" : x >= 50 ? "Fair" : "Low");
 
@@ -56,8 +54,8 @@ const DEFAULTS = {
   odSphere: -3.25, odCyl: -0.5, odAxis: 180, odAl: 25.1,
   osSphere: -3.0, osCyl: -0.25, osAxis: 175, osAl: 24.9,
   photopic_pupil: 5.2,
-  near_phoria: -4, npc: 9, accommodative_lag: 1.1,
-  csf_band: "Mid", visual_stress_score: 6,
+  near_phoria_direction: "Exo", near_phoria_magnitude: 4, npc: 9, accommodative_lag: 1.1,
+  csf_band: "Normal", visual_stress_score: 6,
   near_hours: 7, digital_hours: 5, outdoor_hours: 0.8,
   primary_goal: "Myopia Management",
 };
@@ -67,6 +65,8 @@ const ADV_DEFAULTS = {
   distance_phoria: "", pfv: "", nfv: "", ac_a: "", stereoacuity: "", ocular_dominance: "Balanced",
   binocular_balance: "Normal",
   amplitude_of_accommodation: "", accommodative_facility: "",
+  nra: "", pra: "", bcc: "", mem: "", fixation_disparity: "",
+  symptom_questionnaire_score: "",
   near_working_distance: "", computer_working_distance: "",
   visual_comfort_score: "", neural_adaptation_score: "", dynamic_visual_stability: "",
   typical_working_distance: "", night_driving: false, low_light_demand: "Moderate",
@@ -100,10 +100,18 @@ export default function Page() {
   const [res, setRes] = useState(RESEARCH_DEFAULTS);
   const [pred, setPred] = useState(null);
   const [job, setJob] = useState(null);
+  const [approval, setApproval] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [progress, setProgress] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState(null);
-  const [fu, setFu] = useState({ baseline: 25.1, followup: 25.16, interval: 6 });
+  const [fu, setFu] = useState({
+    baselineOd: 25.1, followupOd: 25.16, baselineOs: 24.9, followupOs: 24.96,
+    baselineOdSphere: -3.25, currentOdSphere: -3.25,
+    baselineOsSphere: -3.0, currentOsSphere: -3.0,
+    interval: 6, baselineComfort: 7, currentComfort: 7,
+    stress: 3, wear: 10, compliance: "Good",
+  });
   const [fuRes, setFuRes] = useState(null);
 
   const set = (k) => (e) => setInp({ ...inp, [k]: e.target.value });
@@ -112,6 +120,7 @@ export default function Page() {
 
   function predictBody() {
     return {
+      patient_id: pred?.patient_id || null,
       age: num(inp.age),
       od: {
         sphere: num(inp.odSphere), cylinder: num(inp.odCyl), axis: num(inp.odAxis),
@@ -122,13 +131,16 @@ export default function Page() {
         axial_length: num(inp.osAl), bcva_logmar: orNull(adv.osBcva),
       },
       photopic_pupil: num(inp.photopic_pupil),
-      near_phoria: num(inp.near_phoria),
+      near_phoria: inp.near_phoria_direction === "Exo"
+        ? -Math.abs(num(inp.near_phoria_magnitude))
+        : inp.near_phoria_direction === "Eso"
+          ? Math.abs(num(inp.near_phoria_magnitude)) : 0,
       npc: num(inp.npc),
       accommodative_lag: num(inp.accommodative_lag),
       csf_band: inp.csf_band,
       visual_stress_score: num(inp.visual_stress_score),
       near_hours: num(inp.near_hours),
-      digital_hours: num(inp.digital_hours),
+      digital_hours: Math.min(num(inp.digital_hours), num(inp.near_hours)),
       outdoor_hours: num(inp.outdoor_hours),
       primary_goal: inp.primary_goal,
 
@@ -140,6 +152,9 @@ export default function Page() {
       binocular_balance: adv.binocular_balance,
       amplitude_of_accommodation: orNull(adv.amplitude_of_accommodation),
       accommodative_facility: orNull(adv.accommodative_facility),
+      nra: orNull(adv.nra), pra: orNull(adv.pra), bcc: orNull(adv.bcc), mem: orNull(adv.mem),
+      fixation_disparity: orNull(adv.fixation_disparity),
+      symptom_questionnaire_score: orNull(adv.symptom_questionnaire_score),
       near_working_distance: orNull(adv.near_working_distance),
       computer_working_distance: orNull(adv.computer_working_distance),
       visual_comfort_score: orNull(adv.visual_comfort_score),
@@ -205,14 +220,22 @@ export default function Page() {
   const downloadFollowupReport = () =>
     downloadPdf("/api/report/followup", {
       ...predictBody(),
-      baseline_al: num(fu.baseline), followup_al: num(fu.followup),
+      baseline_al: num(fu.baselineOd), followup_al: num(fu.followupOd),
       interval_months: Math.round(num(fu.interval)),
     }, "nso-report.pdf");
 
   async function runPredict() {
     setLoading(true);
+    setProgress("Validating clinical inputs");
     setErr(null);
     setJob(null);
+    setApproval(null);
+    const stages = ["Validating clinical inputs", "Evaluating patient phenotype", "Preparing recommendation"];
+    let stage = 0;
+    const progressTimer = window.setInterval(() => {
+      stage = Math.min(stage + 1, stages.length - 1);
+      setProgress(stages[stage]);
+    }, 450);
     try {
       const r = await fetch(`${API}/api/predict`, {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -225,7 +248,27 @@ export default function Page() {
     } catch (e) {
       setErr(`${e}. Is the backend running on ${API}?`);
     } finally {
+      window.clearInterval(progressTimer);
+      setProgress("");
       setLoading(false);
+    }
+  }
+
+  async function approveDesign() {
+    if (!pred) return;
+    setSubmitting(true);
+    setErr(null);
+    try {
+      const r = await fetch(`${API}/api/design/approve`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ design_id: pred.design_id }),
+      });
+      if (!r.ok) throw new Error(`API error ${r.status}`);
+      setApproval(await r.json());
+    } catch (e) {
+      setErr(`Approval failed: ${e}.`);
+    } finally {
+      setSubmitting(false);
     }
   }
 
@@ -257,8 +300,8 @@ export default function Page() {
         body: JSON.stringify({
           ...predictBody(),
           previous_design_id: pred.design_id,
-          baseline_al: num(fu.baseline),
-          followup_al: num(fu.followup),
+          baseline_al: Math.max(num(fu.baselineOd), num(fu.baselineOs)),
+          followup_al: Math.max(num(fu.followupOd), num(fu.followupOs)),
           interval_months: Math.round(num(fu.interval)),
         }),
       });
@@ -280,9 +323,19 @@ export default function Page() {
       const r = await fetch(`${API}/api/followup`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          baseline_al: num(s.baseline), followup_al: num(s.followup),
+          design_id: pred?.design_id,
+          patient_id: pred?.patient_id,
+          baseline_od_al: num(s.baselineOd), followup_od_al: num(s.followupOd),
+          baseline_os_al: num(s.baselineOs), followup_os_al: num(s.followupOs),
           interval_months: Math.round(num(s.interval)),
           current_support_level: "Level 2",
+          baseline_comfort: num(s.baselineComfort), current_comfort: num(s.currentComfort),
+          visual_stress_score: num(s.stress), average_wear_hours: num(s.wear),
+          compliance: s.compliance,
+          baseline_od_refraction: { sphere: num(s.baselineOdSphere) },
+          followup_od_refraction: { sphere: num(s.currentOdSphere) },
+          baseline_os_refraction: { sphere: num(s.baselineOsSphere) },
+          followup_os_refraction: { sphere: num(s.currentOsSphere) },
         }),
       });
       if (r.ok) setFuRes(await r.json());
@@ -322,17 +375,18 @@ export default function Page() {
           inp={inp} set={set} setInp={setInp}
           adv={adv} setA={setA} setAdv={setAdv} advOpen={advOpen} setAdvOpen={setAdvOpen}
           res={res} setR={setR} resOpen={resOpen} setResOpen={setResOpen}
-          loading={loading} run={runPredict}
+          loading={loading} progress={progress} run={runPredict}
           go={(i) => (i === 2 ? goFollowup() : i === 1 && pred && setStep(2))} />
       )}
       {step === 2 && pred && (
-        <Screen2 pred={pred} job={job} submitting={submitting}
+        <Screen2 pred={pred} job={job} approval={approval} submitting={submitting}
+          onApprove={approveDesign}
           onSubmit={submitToManufacturing}
           go={(i) => (i === 0 ? setStep(1) : i === 2 ? goFollowup() : null)}
           onFollowup={goFollowup} onExport={exportPrediction} />
       )}
       {step === 3 && (
-        <Screen3 fu={fu} setFuVal={setFuVal} res={fuRes} onDownload={downloadFollowupReport}
+        <Screen3 fu={fu} setFuVal={setFuVal} res={fuRes} designId={pred?.design_id} onDownload={downloadFollowupReport}
           onRefit={runRefit} canRefit={!!pred} refitting={submitting}
           go={(i) => (i === 0 ? setStep(1) : i === 1 ? setStep(2) : null)} />
       )}
@@ -365,7 +419,7 @@ function Crumbs({ step, go }) {
 }
 
 function Screen1({ inp, set, setInp, adv, setA, setAdv, advOpen, setAdvOpen,
-  res, setR, resOpen, setResOpen, loading, run, go }) {
+  res, setR, resOpen, setResOpen, loading, progress, run, go }) {
   return (
     <div>
       <Crumbs step={1} go={go} />
@@ -392,11 +446,17 @@ function Screen1({ inp, set, setInp, adv, setA, setAdv, advOpen, setAdvOpen,
         <div className="divider" style={{ margin: "22px 0" }} />
         <div className="cap cap-sm" style={{ marginBottom: 12 }}>BINOCULAR &amp; ACCOMMODATION</div>
         <div className="grid2">
-          <NumField label="Near phoria" unit="Δ · exo negative" step="0.5" value={inp.near_phoria} onChange={set("near_phoria")} />
+          <SelectField label="Near phoria direction" unit="" value={inp.near_phoria_direction}
+            onChange={set("near_phoria_direction")} options={["Exo", "Ortho", "Eso"]} />
+          <NumField label="Near phoria magnitude" unit="Δ" step="0.5"
+            value={inp.near_phoria_magnitude} onChange={set("near_phoria_magnitude")} />
           <NumField label="NPC" unit="cm" step="0.5" value={inp.npc} onChange={set("npc")} />
           <NumField label="Accommodative lag" unit="D" step="0.05" value={inp.accommodative_lag} onChange={set("accommodative_lag")} />
           <SelectField label="Contrast sensitivity (CSF)" unit="band" value={inp.csf_band}
-            onChange={set("csf_band")} options={["Low", "Mid", "High"]} />
+            onChange={set("csf_band")} options={[
+              "Normal", "Mildly Reduced", "Moderately Reduced",
+              "Significantly Reduced", "Not Tested",
+            ]} />
         </div>
 
         <div className="divider" style={{ margin: "22px 0" }} />
@@ -404,10 +464,10 @@ function Screen1({ inp, set, setInp, adv, setA, setAdv, advOpen, setAdvOpen,
         <div className="grid2" style={{ gap: "24px 32px" }}>
           <Slider label="Visual stress" unit="/ 10" min="0" max="10" step="1"
             value={inp.visual_stress_score} onChange={set("visual_stress_score")} hint="Patient-reported symptom load" />
-          <Slider label="Near work" unit="h/day" min="0" max="14" step="0.5"
-            value={inp.near_hours} onChange={set("near_hours")} hint="School + close work" />
-          <Slider label="Digital device" unit="h/day" min="0" max="14" step="0.5"
-            value={inp.digital_hours} onChange={set("digital_hours")} />
+          <Slider label="Total near load" unit="h/day" min="0" max="14" step="0.5"
+            value={inp.near_hours} onChange={set("near_hours")} hint="All close work, including screens" />
+          <Slider label="Digital portion of near load" unit="h/day" min="0" max={inp.near_hours || 0} step="0.5"
+            value={Math.min(num(inp.digital_hours), num(inp.near_hours))} onChange={set("digital_hours")} />
           <Slider label="Outdoor activity" unit="h/day" min="0" max="8" step="0.5"
             value={inp.outdoor_hours} onChange={set("outdoor_hours")} hint="Target ≥ 2 h/day" />
         </div>
@@ -433,6 +493,10 @@ function Screen1({ inp, set, setInp, adv, setA, setAdv, advOpen, setAdvOpen,
               onChange={setA("ocular_dominance")} options={["Balanced", "OD", "OS"]} />
             <SelectField label="Binocular balance" unit="" value={adv.binocular_balance}
               onChange={setA("binocular_balance")} options={["Normal", "Mild", "Significant"]} />
+            <NumField label="Fixation disparity" unit="Δ · optional" step="0.25"
+              value={adv.fixation_disparity} onChange={setA("fixation_disparity")} />
+            <NumField label="Symptom questionnaire" unit="score · optional" step="1"
+              value={adv.symptom_questionnaire_score} onChange={setA("symptom_questionnaire_score")} />
             <NumField label="BCVA OD" unit="logMAR · optional" step="0.05" value={adv.odBcva} onChange={setA("odBcva")} />
             <NumField label="BCVA OS" unit="logMAR · optional" step="0.05" value={adv.osBcva} onChange={setA("osBcva")} />
           </div>
@@ -443,6 +507,10 @@ function Screen1({ inp, set, setInp, adv, setA, setAdv, advOpen, setAdvOpen,
               value={adv.amplitude_of_accommodation} onChange={setA("amplitude_of_accommodation")} />
             <NumField label="Accommodative facility" unit="cpm · optional" step="1"
               value={adv.accommodative_facility} onChange={setA("accommodative_facility")} />
+            <NumField label="NRA" unit="D · optional" step="0.25" value={adv.nra} onChange={setA("nra")} />
+            <NumField label="PRA" unit="D · optional" step="0.25" value={adv.pra} onChange={setA("pra")} />
+            <NumField label="BCC" unit="D · optional" step="0.25" value={adv.bcc} onChange={setA("bcc")} />
+            <NumField label="MEM" unit="D · optional" step="0.25" value={adv.mem} onChange={setA("mem")} />
             <NumField label="Near working distance" unit="cm · optional" step="1"
               value={adv.near_working_distance} onChange={setA("near_working_distance")} />
             <NumField label="Computer working distance" unit="cm · optional" step="1"
@@ -534,7 +602,7 @@ function Screen1({ inp, set, setInp, adv, setA, setAdv, advOpen, setAdvOpen,
           <div className="cap cap-sm" style={{ margin: "20px 0 12px" }}>WAVEFRONT</div>
           <div className="grid2">
             <NumField label="HOA RMS" unit="µm · optional" step="0.01" value={res.hoa_rms} onChange={setR("hoa_rms")} />
-            <NumField label="Corneal spherical aberration" unit="µm · optional" step="0.01" value={res.corneal_sa} onChange={setR("corneal_sa")} />
+            <NumField label="Corneal SA" unit="µm · optional" step="0.01" value={res.corneal_sa} onChange={setR("corneal_sa")} />
             <NumField label="Coma" unit="µm · optional" step="0.01" value={res.coma} onChange={setR("coma")} />
             <NumField label="Trefoil" unit="µm · optional" step="0.01" value={res.trefoil} onChange={setR("trefoil")} />
             <NumField label="Corneal astigmatism" unit="D · optional" step="0.25"
@@ -546,11 +614,9 @@ function Screen1({ inp, set, setInp, adv, setA, setAdv, advOpen, setAdvOpen,
 
         <div className="divider" style={{ margin: "20px 0" }} />
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16 }}>
-          <span className="note">
-            Optimization runs server-side. The optical design itself is not exposed to this browser.
-          </span>
+          <span className="note">{loading ? progress : "The recommendation is prepared securely from the clinical dataset."}</span>
           <button className="btn btn-primary" disabled={loading} onClick={run}>
-            {loading ? "Generating…" : "Generate Personalized Design"}
+            {loading ? "Working…" : "Generate Personalized Design"}
           </button>
         </div>
       </div>
@@ -661,13 +727,10 @@ function Slider({ label, unit, min, max, step, value, onChange, hint }) {
 // --------------------------------------------------------------------------
 // Screen 2 — clinical results.
 //
-// What is shown: Design ID, phenotype, indices, predicted outcomes, why this
-// design was chosen. What is NOT shown, and never arrives in the browser at
-// all: spherical aberration, microstructure geometry, fill factor, spatial
-// density, jitter, temporal asymmetry.
+// The results screen follows the explicit clinical response contract.
 // --------------------------------------------------------------------------
 
-function Screen2({ pred, job, submitting, onSubmit, go, onFollowup, onExport }) {
+function Screen2({ pred, job, approval, submitting, onApprove, onSubmit, go, onFollowup, onExport }) {
   const conf = pred.prediction_confidence;
   const tierKey = conf < 70 ? "review" : conf < 82 ? "caution" : "ready";
   const t = RESULT_TIERS[tierKey];
@@ -677,8 +740,7 @@ function Screen2({ pred, job, submitting, onSubmit, go, onFollowup, onExport }) 
       <Crumbs step={2} go={go} />
       <h1 className="title" style={{ fontSize: 28, marginBottom: 2 }}>Individual Visual Phenotype</h1>
       <p className="sub" style={{ fontSize: 13, marginBottom: 14 }}>
-        Deterministic output — predicted percentages are model estimates, not a clinically
-        validated outcome.
+        Decision-support scores are relative fit indicators, not efficacy probabilities.
       </p>
 
       <div className="design-hero">
@@ -733,7 +795,7 @@ function Screen2({ pred, job, submitting, onSubmit, go, onFollowup, onExport }) 
               {PREDICTED_LABELS.map(([key, label]) => (
                 <div key={key}>
                   <div className="metric-cap" style={{ marginBottom: 4 }}>{label}</div>
-                  <div className="metric-big" style={{ fontSize: 24, lineHeight: 1 }}>{pred.predicted[key]}%</div>
+                  <div className="metric-big" style={{ fontSize: 24, lineHeight: 1 }}>{pred.predicted[key]}/100</div>
                   <div className="metric-sub" style={{ marginTop: 3 }}>{scoreLabel(pred.predicted[key])}</div>
                 </div>
               ))}
@@ -755,54 +817,6 @@ function Screen2({ pred, job, submitting, onSubmit, go, onFollowup, onExport }) 
         </div>
       </div>
 
-      <div className="card" style={{ padding: 20, marginBottom: 16 }}>
-        <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 12 }}>
-          <div className="cap cap-sm">CANDIDATE COMPARISON · JOINT OPTIMIZATION</div>
-          <div className="note">
-            {pred.joint_optimization.pairs_evaluated} OD/OS pairs evaluated together ·
-            binocular cost {pred.joint_optimization.binocular_cost}
-          </div>
-        </div>
-        {["OD", "OS"].map((eye) => (
-          <div key={eye} style={{ marginBottom: 14 }}>
-            <div className="metric-cap" style={{ marginBottom: 6 }}>{eye}</div>
-            <table className="ctable">
-              <thead>
-                <tr>
-                  <th>Candidate</th><th>Control</th><th>Comfort</th>
-                  <th>Adaptation</th><th>Acuity retention</th><th>Feasible</th><th>Loss</th>
-                </tr>
-              </thead>
-              <tbody>
-                {pred.candidate_comparison[eye].map((c) => (
-                  <tr key={c.candidate} className={c.selected ? "row-selected" : ""}>
-                    <td>
-                      {c.candidate}
-                      {c.selected && <span className="pill-likely" style={{ marginLeft: 8 }}>SELECTED</span>}
-                      {!c.selected && c.monocular_best &&
-                        <span className="pill-mono" style={{ marginLeft: 8 }}>BEST ALONE</span>}
-                    </td>
-                    <td>{c.predicted_control}</td>
-                    <td>{c.predicted_comfort}</td>
-                    <td>{c.predicted_adaptation}</td>
-                    <td>{c.predicted_acuity_retention}</td>
-                    <td>{c.feasible ? "Yes" : "No"}</td>
-                    <td>{c.relative_loss.toFixed(3)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ))}
-        <div className="note" style={{ marginTop: 4 }}>{pred.selection_rationale}</div>
-        {pred.joint_optimization.overruled_monocular_choice && (
-          <div className="note" style={{ marginTop: 6, color: "#185fa5" }}>
-            The pair was chosen over each eye&apos;s individual optimum — marked
-            BEST ALONE — because the two eyes fuse better together.
-          </div>
-        )}
-      </div>
-
       {pred.spatial_frequency_descriptors.csf_auc !== null && (
         <div className="card" style={{ padding: 20, marginBottom: 16 }}>
           <div className="cap cap-sm" style={{ marginBottom: 12 }}>
@@ -820,16 +834,11 @@ function Screen2({ pred, job, submitting, onSubmit, go, onFollowup, onExport }) 
       )}
 
       <div className="card" style={{ padding: 20, marginBottom: 16 }}>
-        <div className="cap cap-sm" style={{ marginBottom: 12 }}>WHY THIS DESIGN</div>
+        <div className="cap cap-sm" style={{ marginBottom: 12 }}>WHY THIS RECOMMENDATION</div>
         <ul className="reasons">
           {pred.explainable_summary.map((line, i) => <li key={i}>{line}</li>)}
         </ul>
-        <div className="ip-note">
-          The optical design recipe — spherical aberration, microstructure geometry, spatial
-          statistics and OD/OS asymmetry — is computed and held server-side under{" "}
-          <strong>{pred.design_id}</strong>. It is not transmitted to this browser and is not
-          included in the exported report.
-        </div>
+        <div className="ip-note">Authorized record <strong>{pred.design_id}</strong> is held in the secure vault.</div>
       </div>
 
       {job && (
@@ -861,8 +870,11 @@ function Screen2({ pred, job, submitting, onSubmit, go, onFollowup, onExport }) 
 
       <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 10, marginTop: 12 }}>
         <button className="btn btn-ghost" onClick={onExport}>Export clinical report ⤓</button>
-        <button className="btn btn-ghost" disabled={submitting || !!job} onClick={onSubmit}>
-          {job ? "Submitted ✓" : submitting ? "Submitting…" : "Submit to Manufacturing"}
+        <button className="btn btn-ghost" disabled={submitting || !!approval} onClick={onApprove}>
+          {approval ? "Approved ✓" : submitting ? "Working…" : "Approve Design"}
+        </button>
+        <button className="btn btn-ghost" disabled={submitting || !!job || !approval} onClick={onSubmit}>
+          {job ? "Submitted ✓" : submitting ? "Submitting…" : "Send Approved Design"}
         </button>
         <button className="btn btn-primary" onClick={onFollowup}>Track follow-up →</button>
       </div>
@@ -908,7 +920,7 @@ function Metric({ cap, big, sub }) {
   );
 }
 
-function Screen3({ fu, setFuVal, res, go, onDownload, onRefit, canRefit, refitting }) {
+function Screen3({ fu, setFuVal, res, designId, go, onDownload, onRefit, canRefit, refitting }) {
   const fmt = (x) => `${x >= 0 ? "+" : "−"}${Math.abs(x).toFixed(2)}`;
   const tier = res ? FU_TIERS[res.progression_band] : null;
 
@@ -917,15 +929,18 @@ function Screen3({ fu, setFuVal, res, go, onDownload, onRefit, canRefit, refitti
       <Crumbs step={3} go={go} />
       <h1 className="title">Follow-up visit</h1>
       <p className="sub">
-        Re-measure axial length after a period of lens wear. Progression is derived
-        deterministically from the interval — no learned parameters.
+        Record binocular change, comfort and actual exposure. The system supports the
+        clinician&apos;s decision and does not make an autonomous diagnosis.
       </p>
+      {designId && <div className="note" style={{ marginTop: 8 }}>Original design: {designId}</div>}
 
       <div className="card lift" style={{ marginTop: 20, marginBottom: 16 }}>
-        <div className="cap" style={{ marginBottom: 16 }}>AXIAL-LENGTH READINGS</div>
+        <div className="cap" style={{ marginBottom: 16 }}>AXIAL-LENGTH READINGS · OD / OS</div>
         <div className="grid2" style={{ marginBottom: 24 }}>
-          <NumField label="Baseline AL" unit="mm" step="0.01" value={fu.baseline} onChange={setFuVal("baseline")} />
-          <NumField label="Follow-up AL" unit="mm" step="0.01" value={fu.followup} onChange={setFuVal("followup")} />
+          <NumField label="OD baseline AL" unit="mm" step="0.01" value={fu.baselineOd} onChange={setFuVal("baselineOd")} />
+          <NumField label="OD follow-up AL" unit="mm" step="0.01" value={fu.followupOd} onChange={setFuVal("followupOd")} />
+          <NumField label="OS baseline AL" unit="mm" step="0.01" value={fu.baselineOs} onChange={setFuVal("baselineOs")} />
+          <NumField label="OS follow-up AL" unit="mm" step="0.01" value={fu.followupOs} onChange={setFuVal("followupOs")} />
         </div>
         <div className="slider" style={{ maxWidth: "50%" }}>
           <div className="slider-head">
@@ -933,6 +948,24 @@ function Screen3({ fu, setFuVal, res, go, onDownload, onRefit, canRefit, refitti
             <span className="slider-val">{fu.interval} <span className="unit">months</span></span>
           </div>
           <input type="range" min="1" max="12" step="1" value={fu.interval} onChange={setFuVal("interval")} />
+        </div>
+        <div className="divider" style={{ margin: "22px 0" }} />
+        <div className="cap cap-sm" style={{ marginBottom: 12 }}>REFRACTION</div>
+        <div className="grid2">
+          <NumField label="OD baseline sphere" unit="D" step="0.25" value={fu.baselineOdSphere} onChange={setFuVal("baselineOdSphere")} />
+          <NumField label="OD current sphere" unit="D" step="0.25" value={fu.currentOdSphere} onChange={setFuVal("currentOdSphere")} />
+          <NumField label="OS baseline sphere" unit="D" step="0.25" value={fu.baselineOsSphere} onChange={setFuVal("baselineOsSphere")} />
+          <NumField label="OS current sphere" unit="D" step="0.25" value={fu.currentOsSphere} onChange={setFuVal("currentOsSphere")} />
+        </div>
+        <div className="divider" style={{ margin: "22px 0" }} />
+        <div className="cap cap-sm" style={{ marginBottom: 12 }}>COMFORT &amp; EXPOSURE</div>
+        <div className="grid2">
+          <NumField label="Baseline comfort" unit="/ 10" step="1" value={fu.baselineComfort} onChange={setFuVal("baselineComfort")} />
+          <NumField label="Current comfort" unit="/ 10" step="1" value={fu.currentComfort} onChange={setFuVal("currentComfort")} />
+          <NumField label="Visual stress" unit="/ 10" step="1" value={fu.stress} onChange={setFuVal("stress")} />
+          <NumField label="Average wear" unit="h/day" step="0.5" value={fu.wear} onChange={setFuVal("wear")} />
+          <SelectField label="Compliance" unit="" value={fu.compliance}
+            onChange={setFuVal("compliance")} options={["Good", "Partial", "Poor", "Unknown"]} />
         </div>
       </div>
 
@@ -945,18 +978,18 @@ function Screen3({ fu, setFuVal, res, go, onDownload, onRefit, canRefit, refitti
         <div className="card" style={{ padding: 16, marginBottom: 16 }}>
           <div className="cap cap-sm" style={{ marginBottom: 12 }}>CLOSED-LOOP MANAGEMENT</div>
           <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-            <FlowStep label="Baseline" value={`${num(fu.baseline).toFixed(2)} mm`} />
+            <FlowStep label="OD baseline" value={`${num(fu.baselineOd).toFixed(2)} mm`} />
             <Arrow />
-            <FlowStep label={`${fu.interval} months`} value={`${num(fu.followup).toFixed(2)} mm`} />
+            <FlowStep label={`${fu.interval} months`} value={`${num(fu.followupOd).toFixed(2)} mm`} />
             <Arrow />
             <FlowStep label="Annualized" value={`${res.annualized_delta_al.toFixed(2)} mm/yr`} />
             <Arrow />
-            <FlowStep label="Next optical support" value={res.next_support_level} highlight />
+            <FlowStep label="Action" value={res.action_class} highlight />
           </div>
           <div className="note" style={{ marginTop: 10 }}>
             {res.refit_required
-              ? "A refit is indicated — regenerate the personalized design to obtain a new Design ID."
-              : "No refit indicated. The current Design ID remains valid."}
+              ? "Optimization can create a new immutable revision after clinical review."
+              : "The current approved revision remains the active recommendation."}
           </div>
         </div>
       )}

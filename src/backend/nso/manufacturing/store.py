@@ -28,6 +28,7 @@ import json
 import os
 import sqlite3
 import threading
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Protocol, runtime_checkable
@@ -108,6 +109,12 @@ class DesignStore(Protocol):
     def get(self, design_id: str) -> Dict[str, Any]: ...
     def has(self, design_id: str) -> bool: ...
     def next_job_serial(self) -> int: ...
+    def put_record(self, domain: str, record_id: str, payload: Dict[str, Any]) -> None: ...
+    def get_record(self, domain: str, record_id: str) -> Dict[str, Any]: ...
+    def append_related(self, domain: str, object_id: str, payload: Dict[str, Any]) -> str: ...
+    def related(self, domain: str, object_id: str) -> list[Dict[str, Any]]: ...
+    def append_audit(self, payload: Dict[str, Any]) -> str: ...
+    def audits(self, object_id: Optional[str] = None) -> list[Dict[str, Any]]: ...
 
 
 class InMemoryDesignStore:
@@ -120,16 +127,23 @@ class InMemoryDesignStore:
 
     def __init__(self) -> None:
         self._data: Dict[str, Dict[str, Any]] = {}
+        self._records: Dict[tuple[str, str], Dict[str, Any]] = {}
+        self._related: Dict[tuple[str, str], list[Dict[str, Any]]] = {}
+        self._audits: list[Dict[str, Any]] = []
         self._serial = get_config().job_serial_start - 1
         self._lock = threading.Lock()
 
     def put(self, design_id: str, payload: Dict[str, Any]) -> None:
-        self._data[design_id] = payload
+        if design_id in self._data:
+            if dumps_entry(self._data[design_id]) != dumps_entry(payload):
+                raise ValueError(f"immutable design already exists: {design_id}")
+            return
+        self._data[design_id] = loads_entry(dumps_entry(payload))
 
     def get(self, design_id: str) -> Dict[str, Any]:
         if design_id not in self._data:
             raise KeyError(design_id)
-        return self._data[design_id]
+        return loads_entry(dumps_entry(self._data[design_id]))
 
     def has(self, design_id: str) -> bool:
         return design_id in self._data
@@ -138,6 +152,44 @@ class InMemoryDesignStore:
         with self._lock:
             self._serial += 1
             return self._serial
+
+    def put_record(self, domain: str, record_id: str, payload: Dict[str, Any]) -> None:
+        key = (domain, record_id)
+        if key in self._records:
+            if dumps_entry(self._records[key]) != dumps_entry(payload):
+                raise ValueError(f"immutable {domain} record already exists: {record_id}")
+            return
+        self._records[key] = loads_entry(dumps_entry(payload))
+
+    def get_record(self, domain: str, record_id: str) -> Dict[str, Any]:
+        try:
+            return loads_entry(dumps_entry(self._records[(domain, record_id)]))
+        except KeyError:
+            raise KeyError(record_id) from None
+
+    def append_related(self, domain: str, object_id: str, payload: Dict[str, Any]) -> str:
+        record_id = payload.get("record_id") or uuid.uuid4().hex
+        record = {**payload, "record_id": record_id}
+        self._related.setdefault((domain, object_id), []).append(
+            loads_entry(dumps_entry(record))
+        )
+        return record_id
+
+    def related(self, domain: str, object_id: str) -> list[Dict[str, Any]]:
+        return [
+            loads_entry(dumps_entry(record))
+            for record in self._related.get((domain, object_id), ())
+        ]
+
+    def append_audit(self, payload: Dict[str, Any]) -> str:
+        event_id = payload.get("event_id") or uuid.uuid4().hex
+        self._audits.append(
+            loads_entry(dumps_entry({**payload, "event_id": event_id}))
+        )
+        return event_id
+
+    def audits(self, object_id: Optional[str] = None) -> list[Dict[str, Any]]:
+        return [dict(x) for x in self._audits if object_id is None or x.get("object_id") == object_id]
 
 
 # --------------------------------------------------------------------------- #
@@ -160,6 +212,32 @@ SCHEMA = (
     CREATE TABLE IF NOT EXISTS counters (
         name   TEXT PRIMARY KEY,
         value  BIGINT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS domain_records (
+        domain      TEXT NOT NULL,
+        record_id   TEXT NOT NULL,
+        payload     TEXT NOT NULL,
+        created_at  TEXT NOT NULL,
+        PRIMARY KEY (domain, record_id)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS related_records (
+        record_id   TEXT PRIMARY KEY,
+        domain      TEXT NOT NULL,
+        object_id   TEXT NOT NULL,
+        payload     TEXT NOT NULL,
+        created_at  TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS audit_events (
+        event_id    TEXT PRIMARY KEY,
+        object_id   TEXT NOT NULL,
+        payload     TEXT NOT NULL,
+        created_at  TEXT NOT NULL
     )
     """,
 )
@@ -201,12 +279,14 @@ class SqlDesignStore:
                 self._sql(
                     "INSERT INTO designs (design_id, payload, created_at, updated_at) "
                     "VALUES (?, ?, ?, ?) "
-                    "ON CONFLICT (design_id) DO UPDATE SET "
-                    "payload = EXCLUDED.payload, updated_at = EXCLUDED.updated_at"
+                    "ON CONFLICT (design_id) DO NOTHING"
                 ),
                 (design_id, blob, now, now),
             )
             conn.commit()
+        stored = self.get(design_id)
+        if dumps_entry(stored) != blob:
+            raise ValueError(f"immutable design already exists: {design_id}")
 
     def get(self, design_id: str) -> Dict[str, Any]:
         with self._connect() as conn:
@@ -247,6 +327,85 @@ class SqlDesignStore:
         if row is None:                                    # pragma: no cover
             raise RuntimeError("job serial counter row is missing")
         return int(row[0])
+
+    def put_record(self, domain: str, record_id: str, payload: Dict[str, Any]) -> None:
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        blob = dumps_entry(payload)
+        with self._connect() as conn:
+            conn.cursor().execute(
+                self._sql(
+                    "INSERT INTO domain_records (domain, record_id, payload, created_at) "
+                    "VALUES (?, ?, ?, ?) ON CONFLICT (domain, record_id) DO NOTHING"
+                ),
+                (domain, record_id, blob, now),
+            )
+            conn.commit()
+        if dumps_entry(self.get_record(domain, record_id)) != blob:
+            raise ValueError(f"immutable {domain} record already exists: {record_id}")
+
+    def get_record(self, domain: str, record_id: str) -> Dict[str, Any]:
+        with self._connect() as conn:
+            row = conn.cursor().execute(
+                self._sql(
+                    "SELECT payload FROM domain_records WHERE domain = ? AND record_id = ?"
+                ),
+                (domain, record_id),
+            ).fetchone()
+        if row is None:
+            raise KeyError(record_id)
+        return loads_entry(row[0])
+
+    def append_related(self, domain: str, object_id: str, payload: Dict[str, Any]) -> str:
+        record_id = payload.get("record_id") or uuid.uuid4().hex
+        record = {**payload, "record_id": record_id}
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with self._connect() as conn:
+            conn.cursor().execute(
+                self._sql(
+                    "INSERT INTO related_records "
+                    "(record_id, domain, object_id, payload, created_at) VALUES (?, ?, ?, ?, ?)"
+                ),
+                (record_id, domain, object_id, dumps_entry(record), now),
+            )
+            conn.commit()
+        return record_id
+
+    def related(self, domain: str, object_id: str) -> list[Dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.cursor().execute(
+                self._sql(
+                    "SELECT payload FROM related_records WHERE domain = ? AND object_id = ? "
+                    "ORDER BY created_at, record_id"
+                ),
+                (domain, object_id),
+            ).fetchall()
+        return [loads_entry(row[0]) for row in rows]
+
+    def append_audit(self, payload: Dict[str, Any]) -> str:
+        event_id = payload.get("event_id") or uuid.uuid4().hex
+        record = {**payload, "event_id": event_id}
+        now = record.get("timestamp") or datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with self._connect() as conn:
+            conn.cursor().execute(
+                self._sql(
+                    "INSERT INTO audit_events (event_id, object_id, payload, created_at) "
+                    "VALUES (?, ?, ?, ?)"
+                ),
+                (event_id, record.get("object_id", ""), dumps_entry(record), now),
+            )
+            conn.commit()
+        return event_id
+
+    def audits(self, object_id: Optional[str] = None) -> list[Dict[str, Any]]:
+        statement = "SELECT payload FROM audit_events"
+        params: tuple[Any, ...] = ()
+        if object_id is not None:
+            statement += " WHERE object_id = ?"
+            params = (object_id,)
+        statement += " ORDER BY created_at, event_id"
+        with self._connect() as conn:
+            rows = conn.cursor().execute(self._sql(statement), params).fetchall()
+        return [loads_entry(row[0]) for row in rows]
 
 
 class SQLiteDesignStore(SqlDesignStore):

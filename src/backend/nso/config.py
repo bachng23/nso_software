@@ -38,7 +38,15 @@ class EngineConfig:
     # curve always wins, and these numbers are configurable so a clinic can
     # align them with its own instrument.
     csf_bands: Dict[str, float] = field(
-        default_factory=lambda: {"Low": 45.0, "Mid": 70.0, "High": 90.0}
+        default_factory=lambda: {
+            "Normal": 90.0,
+            "Mildly Reduced": 72.0,
+            "Moderately Reduced": 58.0,
+            "Significantly Reduced": 42.0,
+            "Not Tested": 70.0,
+            # Backward-compatible import labels.
+            "Low": 45.0, "Mid": 70.0, "High": 90.0,
+        }
     )
 
     # -- Binocular vision --------------------------------------------------
@@ -403,30 +411,21 @@ class EngineConfig:
             "Myopia Management": {
                 "control": 0.45, "acuity": 0.15, "comfort": 0.13,
                 "adaptation": 0.12, "robustness": 0.10, "manufacturability": 0.05},
-            "Digital Visual Comfort": {
-                "control": 0.25, "acuity": 0.12, "comfort": 0.30,
-                "adaptation": 0.23, "robustness": 0.05, "manufacturability": 0.05},
-            "Reading": {
-                "control": 0.25, "acuity": 0.25, "comfort": 0.22,
-                "adaptation": 0.18, "robustness": 0.05, "manufacturability": 0.05},
-            "Near Work": {
-                "control": 0.25, "acuity": 0.15, "comfort": 0.25,
-                "adaptation": 0.25, "robustness": 0.05, "manufacturability": 0.05},
-            "Presbyopia": {
-                "control": 0.10, "acuity": 0.40, "comfort": 0.22,
-                "adaptation": 0.18, "robustness": 0.05, "manufacturability": 0.05},
-            "Driving": {
-                "control": 0.25, "acuity": 0.35, "comfort": 0.10,
-                "adaptation": 0.08, "robustness": 0.17, "manufacturability": 0.05},
-            "Night Vision": {
-                "control": 0.25, "acuity": 0.38, "comfort": 0.10,
-                "adaptation": 0.07, "robustness": 0.15, "manufacturability": 0.05},
-            "Sports Vision": {
-                "control": 0.25, "acuity": 0.20, "comfort": 0.08,
-                "adaptation": 0.12, "robustness": 0.30, "manufacturability": 0.05},
-            "General Visual Comfort": {
+            "Visual Comfort": {
                 "control": 0.20, "acuity": 0.15, "comfort": 0.30,
                 "adaptation": 0.25, "robustness": 0.05, "manufacturability": 0.05},
+            "Digital / Near-work Comfort": {
+                "control": 0.25, "acuity": 0.12, "comfort": 0.30,
+                "adaptation": 0.23, "robustness": 0.05, "manufacturability": 0.05},
+            "Binocular Visual Support": {
+                "control": 0.25, "acuity": 0.15, "comfort": 0.25,
+                "adaptation": 0.25, "robustness": 0.05, "manufacturability": 0.05},
+            "Contrast Optimization": {
+                "control": 0.25, "acuity": 0.38, "comfort": 0.10,
+                "adaptation": 0.07, "robustness": 0.15, "manufacturability": 0.05},
+            "Balanced Optimization": {
+                "control": 0.30, "acuity": 0.18, "comfort": 0.20,
+                "adaptation": 0.17, "robustness": 0.10, "manufacturability": 0.05},
         }
     )
 
@@ -437,7 +436,19 @@ class EngineConfig:
         raising: a new dropdown entry should degrade to sensible behaviour, not
         take the fitting endpoint down.
         """
-        return self.goal_loss_weights.get(goal, self.loss_weights)
+        legacy_aliases = {
+            "Digital Visual Comfort": "Digital / Near-work Comfort",
+            "Reading": "Digital / Near-work Comfort",
+            "Near Work": "Binocular Visual Support",
+            "Presbyopia": "Contrast Optimization",
+            "Driving": "Contrast Optimization",
+            "Night Vision": "Contrast Optimization",
+            "Sports Vision": "Balanced Optimization",
+            "General Visual Comfort": "Visual Comfort",
+        }
+        return self.goal_loss_weights.get(
+            legacy_aliases.get(goal, goal), self.loss_weights
+        )
     # Optical load buys control: predicted myopia control scales with how far
     # the design's SA sits from its tier's nominal value. This is the premise
     # of the technology, so it must be in the model -- without it SA can be

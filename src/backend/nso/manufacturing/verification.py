@@ -32,7 +32,7 @@ from .registry import REGISTRY
 
 
 def geometric_verification(
-    design_id: str, measurements: Dict[str, float]
+    design_id: str, measurements: Dict[str, float], manufacturing_id: str | None = None
 ) -> Dict[str, Any]:
     """Compare as-manufactured geometry against the acceptance window.
 
@@ -73,11 +73,13 @@ def geometric_verification(
     REGISTRY.record_verification(
         design_id,
         {"type": "geometric", "verdict": verdict, "checks": checks,
+         "manufacturing_id": manufacturing_id,
          "checked_at": checked_at},
     )
 
     out = {
         "design_id": design_id,
+        "manufacturing_id": manufacturing_id,
         "verification_type": "geometric",
         "verdict": verdict,
         "checks": checks,

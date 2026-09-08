@@ -16,14 +16,11 @@ from .csf import CsfMeasurement, from_triplet
 
 PRIMARY_GOALS = (
     "Myopia Management",
-    "Digital Visual Comfort",
-    "Reading",
-    "Near Work",
-    "Presbyopia",
-    "Driving",
-    "Night Vision",
-    "Sports Vision",
-    "General Visual Comfort",
+    "Visual Comfort",
+    "Digital / Near-work Comfort",
+    "Binocular Visual Support",
+    "Contrast Optimization",
+    "Balanced Optimization",
 )
 
 
@@ -62,11 +59,17 @@ class PatientInput:
     stereoacuity: Optional[float] = None   # arc sec
     ocular_dominance: str = "Balanced"     # OD / OS / Balanced
     binocular_balance: str = "Normal"      # Normal / Mild / Significant
+    fixation_disparity: Optional[float] = None
+    symptom_questionnaire_score: Optional[float] = None
 
     # -- Section 3: accommodation ------------------------------------------
     accommodative_lag: float = 0.75   # D
     amplitude_of_accommodation: Optional[float] = None
     accommodative_facility: Optional[float] = None
+    nra: Optional[float] = None
+    pra: Optional[float] = None
+    bcc: Optional[float] = None
+    mem: Optional[float] = None
     near_working_distance: Optional[float] = None
     computer_working_distance: Optional[float] = None
 
@@ -79,7 +82,7 @@ class PatientInput:
     #   csf_band          Low / Mid / High, a label rather than a measurement
     #
     # The band is a fallback, not a measurement -- see ``csf_is_measured``.
-    csf_band: str = "Mid"
+    csf_band: str = "Normal"
     csf_low: Optional[float] = None
     csf_mid: Optional[float] = None
     csf_high: Optional[float] = None
@@ -222,11 +225,17 @@ class PatientInput:
         """Which optional domains actually carry data (drives confidence)."""
         return {
             "binocular_extended": any(
-                v is not None for v in (self.pfv, self.nfv, self.ac_a, self.stereoacuity)
+                v is not None for v in (
+                    self.pfv, self.nfv, self.ac_a, self.stereoacuity,
+                    self.fixation_disparity, self.symptom_questionnaire_score,
+                )
             ),
             "accommodation_extended": any(
                 v is not None
-                for v in (self.amplitude_of_accommodation, self.accommodative_facility)
+                for v in (
+                    self.amplitude_of_accommodation, self.accommodative_facility,
+                    self.nra, self.pra, self.bcc, self.mem,
+                )
             ),
             "csf_measured": any(
                 v is not None for v in (self.csf_low, self.csf_mid, self.csf_high)

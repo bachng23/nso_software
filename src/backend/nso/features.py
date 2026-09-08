@@ -143,7 +143,7 @@ def accommodative_demand_d(p: PatientInput) -> Optional[float]:
 def accommodative_stress_index(p: PatientInput) -> float:
     cfg = get_config()
     raw = 0.45 * norm(p.accommodative_lag, 0.25, 2.0) + 0.30 * norm(
-        p.near_hours + p.digital_hours, 2, 16
+        p.near_hours, 2, 14
     )
     weight = 0.75
 
@@ -185,7 +185,8 @@ def spatial_frequency_sensitivity_index(p: PatientInput) -> float:
 
 
 def visual_stress_index(p: PatientInput) -> float:
-    raw = 0.50 * norm(p.visual_stress_score, 0, 10) + 0.25 * norm(p.digital_hours, 0, 12)
+    digital_fraction = min(1.0, p.digital_hours / max(p.near_hours, 0.25))
+    raw = 0.50 * norm(p.visual_stress_score, 0, 10) + 0.25 * digital_fraction
     weight = 0.75
     raw += 0.15 * norm(p.photopic_pupil, 3.0, 6.5)
     weight += 0.15
@@ -242,7 +243,7 @@ def interocular_image_balance_index(p: PatientInput) -> float:
 
 def task_load_index(p: PatientInput) -> float:
     raw = (
-        0.40 * norm(p.near_hours + p.digital_hours, 2, 16)
+        0.40 * norm(p.near_hours, 2, 14)
         + 0.30 * (1 - norm(p.outdoor_hours, 0, 3))
         + 0.20 * (1 - norm(
             p.typical_working_distance

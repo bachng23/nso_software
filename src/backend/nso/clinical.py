@@ -8,6 +8,8 @@ outcome or an explanation; none of it is a design parameter.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import asdict, replace
 from typing import Any, Dict, List
 
@@ -15,6 +17,7 @@ import nso_core as engine
 
 from .config import get_config
 from .design import design_id_for, optimize_pair, pair_class
+from .design.identity import revision_id_for
 from .features import (
     accommodative_demand_d,
     ai_derived_indices,
@@ -29,6 +32,7 @@ from .ip import assert_no_design_leak
 from .manufacturing import REGISTRY
 from .patient import PatientInput
 from .phenotype import visual_phenotype
+from .predictors import get_predictor
 
 
 def _pct(x: float) -> int:
@@ -46,39 +50,28 @@ def _explainable_summary(
     ]
     if indices["refractive_risk"] >= 60:
         lines.append(
-            "High refractive risk (axial length and age) favours a stronger "
-            "peripheral-defocus configuration."
+            "Age and axial-length findings increase the measured refractive-risk score."
         )
     if indices["visual_stress"] >= 60:
         lines.append(
-            "Elevated visual stress caps the optical load to protect comfort and "
-            "adaptation."
+            "Elevated reported visual stress lowers the expected comfort and adaptation scores."
         )
     if indices["binocular_load"] >= 55:
         lines.append(
-            "Binocular load (near phoria / NPC) shifts the design toward reduced "
-            "near vergence demand."
+            "Near phoria and convergence findings increase measured binocular demand."
         )
     if indices["accommodative_stress"] >= 55:
         lines.append(
-            "Accommodative lag under sustained near work justifies additional near "
-            "support."
+            "Accommodative lag and sustained near work increase accommodative demand."
         )
     if indices["spatial_frequency_sensitivity"] < 55:
         lines.append(
-            "Reduced contrast sensitivity constrains the design to preserve "
-            "high-spatial-frequency performance."
+            "Reduced contrast sensitivity lowers the contrast-optimization fit score."
         )
     if pair_label != "Symmetric":
-        lines.append(
-            f"OD/OS designs are {pair_label.lower()} to respect interocular "
-            "image balance."
-        )
+        lines.append("Interocular findings were considered when balancing the recommendation.")
     if overruled:
-        lines.append(
-            "Joint optimization selected a pair that is not the best option for "
-            "either eye alone, because the pair fuses better together."
-        )
+        lines.append("The recommendation accounts for binocular balance rather than either eye alone.")
     if out_of_range:
         names = ", ".join(f["measurement"].replace("_", " ") for f in out_of_range)
         lines.append(
@@ -89,7 +82,25 @@ def _explainable_summary(
     return lines
 
 
-def run_fitting(p: PatientInput, site: str | None = None) -> Dict[str, Any]:
+def _stable_id(prefix: str, payload: Any) -> str:
+    digest = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, default=str, separators=(",", ":")).encode()
+    ).hexdigest()[:20].upper()
+    return f"{prefix}-{digest}"
+
+
+def run_fitting(
+    p: PatientInput,
+    site: str | None = None,
+    *,
+    patient_id: str | None = None,
+    clinical_dataset_id: str | None = None,
+    design_id_override: str | None = None,
+    revision: int = 0,
+    previous_design_id: str | None = None,
+    reason: str = "initial fitting",
+    outcome_reference: str | None = None,
+) -> Dict[str, Any]:
     """Full V2 fitting.
 
     Returns ``{"clinical": ..., "design": ...}``. Only ``clinical`` may be
@@ -112,7 +123,21 @@ def run_fitting(p: PatientInput, site: str | None = None) -> Dict[str, Any]:
     od_recipe = best_pair["od"]["recipe"]
     os_recipe = best_pair["os"]["recipe"]
     pair_label = pair_class(od_recipe, os_recipe)
-    design_id = design_id_for([od_recipe, os_recipe])
+    patient_snapshot = asdict(p)
+    patient_id = patient_id or _stable_id("PAT", patient_snapshot)
+    clinical_dataset_id = clinical_dataset_id or _stable_id(
+        "CDS", {"patient_id": patient_id, "input": patient_snapshot}
+    )
+    root_design_id = design_id_for(
+        [od_recipe, os_recipe], context={
+            "patient_id": patient_id,
+            "dataset": clinical_dataset_id,
+            "config_version": cfg.version,
+            "predictor": get_predictor().name,
+            "predictor_version": get_predictor().version,
+        }
+    )
+    design_id = design_id_override or revision_id_for(root_design_id, revision)
 
     od_metrics = per_eye["OD"]["selected"]["metrics"]
     os_metrics = per_eye["OS"]["selected"]["metrics"]
@@ -169,6 +194,8 @@ def run_fitting(p: PatientInput, site: str | None = None) -> Dict[str, Any]:
 
     clinical = {
         "design_id": design_id,
+        "patient_id": patient_id,
+        "clinical_dataset_id": clinical_dataset_id,
         "phenotype": phenotype,
         "indices": indices,
         "eyes": {
@@ -254,6 +281,10 @@ def run_fitting(p: PatientInput, site: str | None = None) -> Dict[str, Any]:
         # Which predictor and parameter set produced this. Essential once a
         # learned model is in play: a stored result must name what made it.
         "engine": od_metrics["provenance"],
+        "clinical_recommendation": (
+            "Review inputs before approval" if out_of_range
+            else "Recommendation ready for clinician approval"
+        ),
     }
 
     # The two optical channels are stored as independent objects, as the V2.1
@@ -271,10 +302,32 @@ def run_fitting(p: PatientInput, site: str | None = None) -> Dict[str, Any]:
         },
         "design_id": design_id,
         "recipes": [od_recipe, os_recipe],
-        "revision": 1,
+        "revision": revision,
+        "root_design_id": design_id.split("-R", 1)[0],
+        "previous_design_id": previous_design_id,
+        "patient_id": patient_id,
+        "clinical_dataset_id": clinical_dataset_id,
+        "algorithm_version": od_metrics["provenance"].get("predictor_version", "unknown"),
+        "design_engine_version": "2.1",
+        "manufacturing_version": "2.1",
+        "reason": reason,
+        "outcome_reference": outcome_reference,
+        "status": "Proposed",
         "site": site or cfg.default_site,
         "candidates": per_eye,
     }
+    patient_created = REGISTRY._record_domain(
+        "patient", patient_id, {"patient_id": patient_id}
+    )
+    dataset_created = REGISTRY._record_domain("clinical_dataset", clinical_dataset_id, {
+        "clinical_dataset_id": clinical_dataset_id,
+        "patient_id": patient_id,
+        "input": patient_snapshot,
+    })
+    if not patient_created and dataset_created:
+        REGISTRY._audit(
+            "patient_profile_modified", patient_id, object_type="patient"
+        )
     REGISTRY.register(design_id, design)
     return {"clinical": clinical, "design": design}
 
@@ -284,6 +337,40 @@ def clinical_only(p: PatientInput) -> Dict[str, Any]:
     result = run_fitting(p)["clinical"]
     assert_no_design_leak(result)
     return result
+
+
+# Explicit public response contract. Adding a new internal field can never
+# accidentally make it cross the clinical API boundary.
+CLINICAL_RESPONSE_FIELDS = frozenset({
+    "design_id", "patient_id", "clinical_dataset_id", "phenotype", "indices",
+    "eyes", "binocular_pair", "predicted", "spatial_frequency_descriptors",
+    "csf_protocol", "interocular_acuity_difference", "explainable_summary",
+    "prediction_confidence", "out_of_range_measurements", "neurovisual_status",
+    "accommodative_demand_d", "recommended_follow_up", "manufacturing_status",
+    "primary_goal", "clinical_recommendation", "refit",
+})
+
+
+def public_clinical(payload: Dict[str, Any]) -> Dict[str, Any]:
+    public = {key: payload[key] for key in CLINICAL_RESPONSE_FIELDS if key in payload}
+    if "predicted" in public:
+        scores = public["predicted"]
+        public["predicted"] = {
+            "myopia_management_fit": scores["nso_control_score"],
+            "visual_comfort": scores["visual_comfort"],
+            "adaptation": scores["adaptation"],
+            "binocular_compatibility": scores["binocular_compatibility"],
+        }
+    assert_no_design_leak(public)
+    return public
+
+
+def public_clinical_only(
+    p: PatientInput, *, patient_id: str | None = None
+) -> Dict[str, Any]:
+    clinical = run_fitting(p, patient_id=patient_id)["clinical"]
+    REGISTRY._audit("clinical_response_generated", clinical["design_id"])
+    return public_clinical(clinical)
 
 
 # --------------------------------------------------------------------------- #
@@ -309,11 +396,27 @@ def clinical_followup(
     followup_al: float,
     interval_months: int,
     current_support_level: str = "Level 2",
+    *,
+    baseline_od_al: float | None = None,
+    followup_od_al: float | None = None,
+    baseline_os_al: float | None = None,
+    followup_os_al: float | None = None,
+    baseline_comfort: float | None = None,
+    current_comfort: float | None = None,
+    visual_stress_score: float | None = None,
+    average_wear_hours: float | None = None,
+    compliance: str | None = None,
 ) -> Dict[str, Any]:
     """Progression assessment expressed in clinical, not design, terms."""
     cfg = get_config()
     tier = {v: k for k, v in SUPPORT_LEVELS.items()}.get(current_support_level, "Medium")
-    raw = engine.run_followup(baseline_al, followup_al, interval_months, tier)
+    od_base = baseline_od_al if baseline_od_al is not None else baseline_al
+    od_follow = followup_od_al if followup_od_al is not None else followup_al
+    os_base = baseline_os_al if baseline_os_al is not None else baseline_al
+    os_follow = followup_os_al if followup_os_al is not None else followup_al
+    od_raw = engine.run_followup(od_base, od_follow, interval_months, tier)
+    os_raw = engine.run_followup(os_base, os_follow, interval_months, tier)
+    raw = od_raw if od_raw["annualized_delta_al"] >= os_raw["annualized_delta_al"] else os_raw
     next_level = SUPPORT_LEVELS[raw["next_profile"]]
 
     annualized = raw["annualized_delta_al"]
@@ -331,6 +434,33 @@ def clinical_followup(
             if annualized <= cfg.progression_borderline_ceiling
             else "Progressing"
         ),
+        "eyes": {
+            "OD": {"delta_al": od_raw["delta_al"], "annualized_delta_al": od_raw["annualized_delta_al"]},
+            "OS": {"delta_al": os_raw["delta_al"], "annualized_delta_al": os_raw["annualized_delta_al"]},
+        },
+        "comfort_change": (
+            round(current_comfort - baseline_comfort, 2)
+            if baseline_comfort is not None and current_comfort is not None else None
+        ),
+    }
+    needs_review = (
+        compliance in {"Poor", "Unknown"}
+        or (visual_stress_score is not None and visual_stress_score >= 8)
+        or (average_wear_hours is not None and average_wear_hours < 4)
+    )
+    out["action_class"] = (
+        "CLINICAL REVIEW RECOMMENDED" if needs_review
+        else "DESIGN OPTIMIZATION RECOMMENDED" if out["refit_required"]
+        else "MAINTAIN CURRENT DESIGN"
+    )
+    out["responder_status"] = (
+        "Responder" if out["progression_band"] == "Controlled"
+        else "Borderline responder" if out["progression_band"] == "Borderline"
+        else "Suboptimal responder"
+    )
+    out["exposure"] = {
+        "average_wear_hours": average_wear_hours,
+        "compliance": compliance,
     }
     assert_no_design_leak(out)
     return out
@@ -368,8 +498,36 @@ def refit(
         progression_load=escalation,
     )
 
-    clinical = run_fitting(updated, site=site)["clinical"]
-    revision = REGISTRY.link_revision(clinical["design_id"], previous_design_id)
+    previous = REGISTRY._get(previous_design_id)
+    revision = int(previous.get("revision", 0)) + 1
+    root_id = previous.get("root_design_id") or previous_design_id.split("-R", 1)[0]
+    new_design_id = revision_id_for(root_id, revision)
+    while REGISTRY.known(new_design_id):
+        revision += 1
+        new_design_id = revision_id_for(root_id, revision)
+    outcome_id = _stable_id("OUT", {
+        "design_id": previous_design_id,
+        "interval_months": interval_months,
+        "baseline_al": baseline_al,
+        "followup_al": followup_al,
+    })
+    REGISTRY._record_outcome(outcome_id, previous_design_id, {
+        "outcome_id": outcome_id,
+        "design_id": previous_design_id,
+        "derived": fu,
+    })
+    clinical = run_fitting(
+        updated,
+        site=site,
+        patient_id=previous.get("patient_id"),
+        design_id_override=new_design_id,
+        revision=revision,
+        previous_design_id=previous_design_id,
+        reason="follow-up optimization",
+        outcome_reference=outcome_id,
+    )["clinical"]
+    REGISTRY._audit("design_reoptimized", new_design_id, revision)
+    REGISTRY._audit("design_revision_created", new_design_id, revision)
 
     clinical["refit"] = {
         "previous_design_id": previous_design_id,
@@ -378,6 +536,7 @@ def refit(
         "escalation_applied": escalation > 0,
         "design_changed": clinical["design_id"] != previous_design_id,
         "revision": revision,
+        "outcome_reference": outcome_id,
     }
     assert_no_design_leak(clinical)
     return clinical
