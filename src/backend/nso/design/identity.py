@@ -1,13 +1,28 @@
-"""Design ID: a deterministic, non-invertible public handle for a design pair."""
+"""Design ID: a deterministic, keyed, non-invertible public handle."""
 
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
+import os
 from dataclasses import asdict
 from typing import Any, List
 
 from ..recipe import DesignRecipe
+
+
+_DEVELOPMENT_ID_KEY = "nso-local-development-key-not-for-production"
+
+
+def _identity_key() -> bytes:
+    """Return the server-only key used to blind public Design IDs.
+
+    Render generates this value from ``render.yaml``. The fallback keeps local
+    tests deterministic, but production deployments must set the environment
+    variable so source access cannot enable an offline lookup table.
+    """
+    return os.environ.get("DESIGN_ID_SECRET", _DEVELOPMENT_ID_KEY).encode("utf-8")
 
 
 def design_id_for(recipes: List[DesignRecipe], context: Any = None) -> str:
@@ -19,9 +34,9 @@ def design_id_for(recipes: List[DesignRecipe], context: Any = None) -> str:
         separators=(",", ":"),
         default=str,
     )
-    digest = hashlib.sha256(blob.encode("utf-8")).hexdigest()
-    # 96 bits of digest gives an opaque, unguessable public handle while
-    # retaining deterministic idempotency for a repeated fitting request.
+    digest = hmac.new(_identity_key(), blob.encode("utf-8"), hashlib.sha256).hexdigest()
+    # 96 bits of a keyed digest gives an opaque public handle while retaining
+    # deterministic idempotency for a repeated fitting request.
     return f"NSO-{digest[:24].upper()}"
 
 

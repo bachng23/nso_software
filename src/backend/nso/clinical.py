@@ -310,6 +310,13 @@ def run_fitting(
         "algorithm_version": od_metrics["provenance"].get("predictor_version", "unknown"),
         "design_engine_version": "2.1",
         "manufacturing_version": "2.1",
+        # A clinical-only snapshot used later to compare an observed follow-up
+        # with the original compatibility signal.  It deliberately stores no
+        # optical or manufacturing parameters.
+        "clinical_expectation": {
+            "myopia_management_fit": clinical["predicted"]["nso_control_score"],
+            "prediction_confidence": clinical["prediction_confidence"],
+        },
         "reason": reason,
         "outcome_reference": outcome_reference,
         "status": "Proposed",
@@ -406,6 +413,8 @@ def clinical_followup(
     visual_stress_score: float | None = None,
     average_wear_hours: float | None = None,
     compliance: str | None = None,
+    original_fit_score: float | None = None,
+    original_prediction_confidence: float | None = None,
 ) -> Dict[str, Any]:
     """Progression assessment expressed in clinical, not design, terms."""
     cfg = get_config()
@@ -449,15 +458,57 @@ def clinical_followup(
         or (average_wear_hours is not None and average_wear_hours < 4)
     )
     out["action_class"] = (
-        "CLINICAL REVIEW RECOMMENDED" if needs_review
-        else "DESIGN OPTIMIZATION RECOMMENDED" if out["refit_required"]
-        else "MAINTAIN CURRENT DESIGN"
+        "ADJUST" if needs_review
+        else "RE-FIT" if out["refit_required"]
+        else "CONTINUE"
     )
     out["responder_status"] = (
         "Responder" if out["progression_band"] == "Controlled"
         else "Borderline responder" if out["progression_band"] == "Borderline"
         else "Suboptimal responder"
     )
+    if original_fit_score is None:
+        out["deviation_from_original_prediction"] = None
+    else:
+        fit_category = (
+            "Excellent" if original_fit_score >= 80
+            else "Good" if original_fit_score >= 65
+            else "Fair" if original_fit_score >= 50
+            else "Low"
+        )
+        expected_rank = (
+            2 if fit_category in {"Excellent", "Good"}
+            else 1 if fit_category == "Fair"
+            else 0
+        )
+        observed_rank = {
+            "Controlled": 2, "Borderline": 1, "Progressing": 0,
+        }[out["progression_band"]]
+        category_steps = observed_rank - expected_rank
+        direction = (
+            "More favorable" if category_steps > 0
+            else "Less favorable" if category_steps < 0
+            else "Aligned"
+        )
+        comparison = (
+            f"Aligned with the original {fit_category.lower()} "
+            "design–phenotype compatibility signal."
+            if direction == "Aligned"
+            else f"{direction} than the original {fit_category.lower()} "
+            "design–phenotype compatibility signal."
+        )
+        out["deviation_from_original_prediction"] = {
+            "original_fit_score": round(float(original_fit_score), 1),
+            "original_fit_category": fit_category,
+            "prediction_confidence": (
+                round(float(original_prediction_confidence), 1)
+                if original_prediction_confidence is not None else None
+            ),
+            "observed_responder_classification": out["responder_status"],
+            "category_steps": category_steps,
+            "direction": direction,
+            "summary": comparison,
+        }
     out["exposure"] = {
         "average_wear_hours": average_wear_hours,
         "compliance": compliance,
@@ -485,7 +536,15 @@ def refit(
     if not REGISTRY.known(previous_design_id):
         raise KeyError(previous_design_id)
 
-    fu = clinical_followup(baseline_al, followup_al, interval_months)
+    previous = REGISTRY._get(previous_design_id)
+    expectation = previous.get("clinical_expectation", {})
+    fu = clinical_followup(
+        baseline_al,
+        followup_al,
+        interval_months,
+        original_fit_score=expectation.get("myopia_management_fit"),
+        original_prediction_confidence=expectation.get("prediction_confidence"),
+    )
     escalation = get_config().refit_escalation[fu["progression_band"]]
 
     # Fold the observed progression back in: the measured axial length replaces
@@ -498,7 +557,6 @@ def refit(
         progression_load=escalation,
     )
 
-    previous = REGISTRY._get(previous_design_id)
     revision = int(previous.get("revision", 0)) + 1
     root_id = previous.get("root_design_id") or previous_design_id.split("-R", 1)[0]
     new_design_id = revision_id_for(root_id, revision)

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 const API = process.env.NEXT_PUBLIC_API_BASE || "http://127.0.0.1:8000";
 
@@ -42,6 +42,16 @@ const PREDICTED_LABELS = [
 // Kept next to the marked fields so the two cannot drift apart.
 const PENDING_HINT =
   "Recorded for research review; it does not affect the current recommendation.";
+
+const MEDICAL_CLAIM_DISCLAIMER =
+  "This score estimates design–phenotype compatibility and does not predict treatment efficacy or axial-length reduction.";
+
+const PROCESSING_STAGES = [
+  "Validating clinical data groups",
+  "Evaluating visual phenotype",
+  "Preparing clinical recommendation",
+  "Securing the authorized design record",
+];
 
 const scoreLabel = (x) => (x >= 80 ? "Excellent" : x >= 65 ? "Good" : x >= 50 ? "Fair" : "Low");
 
@@ -103,6 +113,8 @@ export default function Page() {
   const [approval, setApproval] = useState(null);
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState("");
+  const [longRunning, setLongRunning] = useState(false);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState(null);
   const [fu, setFu] = useState({
@@ -113,6 +125,16 @@ export default function Page() {
     stress: 3, wear: 10, compliance: "Good",
   });
   const [fuRes, setFuRes] = useState(null);
+  const [fuPending, setFuPending] = useState(false);
+  const followupRequest = useRef(0);
+
+  // Wake the API while the clinician completes the form. This reduces the
+  // impact of a sleeping server without sending any patient data.
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch(`${API}/api/health`, { cache: "no-store", signal: controller.signal }).catch(() => {});
+    return () => controller.abort();
+  }, []);
 
   const set = (k) => (e) => setInp({ ...inp, [k]: e.target.value });
   const setA = (k) => (e) => setAdv({ ...adv, [k]: e.target.value });
@@ -220,22 +242,37 @@ export default function Page() {
   const downloadFollowupReport = () =>
     downloadPdf("/api/report/followup", {
       ...predictBody(),
-      baseline_al: num(fu.baselineOd), followup_al: num(fu.followupOd),
+      design_id: pred?.design_id || null,
+      baseline_od_al: num(fu.baselineOd), followup_od_al: num(fu.followupOd),
+      baseline_os_al: num(fu.baselineOs), followup_os_al: num(fu.followupOs),
       interval_months: Math.round(num(fu.interval)),
+      baseline_comfort: num(fu.baselineComfort), current_comfort: num(fu.currentComfort),
+      visual_stress_score_followup: num(fu.stress), average_wear_hours: num(fu.wear),
+      compliance: fu.compliance,
     }, "nso-report.pdf");
 
   async function runPredict() {
     setLoading(true);
-    setProgress("Validating clinical inputs");
+    setProgress("");
+    setLongRunning(false);
+    setElapsedSeconds(0);
     setErr(null);
     setJob(null);
     setApproval(null);
-    const stages = ["Validating clinical inputs", "Evaluating patient phenotype", "Preparing recommendation"];
     let stage = 0;
-    const progressTimer = window.setInterval(() => {
-      stage = Math.min(stage + 1, stages.length - 1);
-      setProgress(stages[stage]);
-    }, 450);
+    let progressTimer = null;
+    const started = Date.now();
+    const elapsedTimer = window.setInterval(() => {
+      setElapsedSeconds(Math.floor((Date.now() - started) / 1000));
+    }, 1000);
+    const longTimer = window.setTimeout(() => {
+      setLongRunning(true);
+      setProgress(PROCESSING_STAGES[0]);
+      progressTimer = window.setInterval(() => {
+        stage = Math.min(stage + 1, PROCESSING_STAGES.length - 1);
+        setProgress(PROCESSING_STAGES[stage]);
+      }, 2500);
+    }, 10000);
     try {
       const r = await fetch(`${API}/api/predict`, {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -248,8 +285,11 @@ export default function Page() {
     } catch (e) {
       setErr(`${e}. Is the backend running on ${API}?`);
     } finally {
-      window.clearInterval(progressTimer);
+      window.clearTimeout(longTimer);
+      window.clearInterval(elapsedTimer);
+      if (progressTimer) window.clearInterval(progressTimer);
       setProgress("");
+      setLongRunning(false);
       setLoading(false);
     }
   }
@@ -295,13 +335,14 @@ export default function Page() {
     setSubmitting(true);
     setErr(null);
     try {
+      const useOd = !fuRes || fuRes.eyes.OD.annualized_delta_al >= fuRes.eyes.OS.annualized_delta_al;
       const r = await fetch(`${API}/api/refit`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           ...predictBody(),
           previous_design_id: pred.design_id,
-          baseline_al: Math.max(num(fu.baselineOd), num(fu.baselineOs)),
-          followup_al: Math.max(num(fu.followupOd), num(fu.followupOs)),
+          baseline_al: useOd ? num(fu.baselineOd) : num(fu.baselineOs),
+          followup_al: useOd ? num(fu.followupOd) : num(fu.followupOs),
           interval_months: Math.round(num(fu.interval)),
         }),
       });
@@ -319,6 +360,8 @@ export default function Page() {
 
   async function runFollowup(next) {
     const s = next || fu;
+    const requestId = ++followupRequest.current;
+    setFuPending(true);
     try {
       const r = await fetch(`${API}/api/followup`, {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -338,8 +381,14 @@ export default function Page() {
           followup_os_refraction: { sphere: num(s.currentOsSphere) },
         }),
       });
-      if (r.ok) setFuRes(await r.json());
-    } catch (e) { /* ignore transient */ }
+      if (r.ok) {
+        const body = await r.json();
+        if (requestId === followupRequest.current) setFuRes(body);
+      }
+    } catch (e) { /* keep the last complete assessment during a transient error */ }
+    finally {
+      if (requestId === followupRequest.current) setFuPending(false);
+    }
   }
 
   function goFollowup() {
@@ -360,11 +409,11 @@ export default function Page() {
         <div className="brand">
           <span className="brand-mark" />
           <span className="brand-name">NSO AI-PC Fitting Platform</span>
-          <span className="brand-ver">V2 · Research Prototype</span>
+          <span className="brand-ver">V2.1 · Clinical Decision Support — Knowledge-guided personalization engine</span>
         </div>
         <div className="badge">
           <span className="badge-dot" />
-          <span className="badge-text">Rule-based</span>
+          <span className="badge-text">Clinical pilot</span>
         </div>
       </div>
 
@@ -375,7 +424,8 @@ export default function Page() {
           inp={inp} set={set} setInp={setInp}
           adv={adv} setA={setA} setAdv={setAdv} advOpen={advOpen} setAdvOpen={setAdvOpen}
           res={res} setR={setR} resOpen={resOpen} setResOpen={setResOpen}
-          loading={loading} progress={progress} run={runPredict}
+          loading={loading} progress={progress} longRunning={longRunning}
+          elapsedSeconds={elapsedSeconds} run={runPredict}
           go={(i) => (i === 2 ? goFollowup() : i === 1 && pred && setStep(2))} />
       )}
       {step === 2 && pred && (
@@ -386,7 +436,8 @@ export default function Page() {
           onFollowup={goFollowup} onExport={exportPrediction} />
       )}
       {step === 3 && (
-        <Screen3 fu={fu} setFuVal={setFuVal} res={fuRes} designId={pred?.design_id} onDownload={downloadFollowupReport}
+        <Screen3 fu={fu} setFuVal={setFuVal} res={fuRes} pending={fuPending}
+          designId={pred?.design_id} onDownload={downloadFollowupReport}
           onRefit={runRefit} canRefit={!!pred} refitting={submitting}
           go={(i) => (i === 0 ? setStep(1) : i === 1 ? setStep(2) : null)} />
       )}
@@ -397,7 +448,7 @@ export default function Page() {
 // --------------------------------------------------------------------------
 // Screen 1 — three tiers.
 //
-// Tier 1 (Quick Fitting) is the default view and stays at ~13 inputs. Tiers 2
+// Tier 1 (Quick Fitting) is organized into 13 clinical data groups. Tiers 2
 // and 3 are collapsed; nothing in any tier is a design parameter, because the
 // design engine is not steerable from the client.
 // --------------------------------------------------------------------------
@@ -419,7 +470,7 @@ function Crumbs({ step, go }) {
 }
 
 function Screen1({ inp, set, setInp, adv, setA, setAdv, advOpen, setAdvOpen,
-  res, setR, resOpen, setResOpen, loading, progress, run, go }) {
+  res, setR, resOpen, setResOpen, loading, progress, longRunning, elapsedSeconds, run, go }) {
   return (
     <div>
       <Crumbs step={1} go={go} />
@@ -430,7 +481,7 @@ function Screen1({ inp, set, setInp, adv, setA, setAdv, advOpen, setAdvOpen,
       </p>
 
       <div className="card lift" style={{ marginTop: 20 }}>
-        <TierHead n="1" title="QUICK FITTING" note="Default — everything the engine needs" />
+        <TierHead n="1" title="QUICK FITTING" note="13 clinical data groups · everything the engine needs" />
 
         <div className="cap cap-sm" style={{ margin: "18px 0 12px" }}>PATIENT &amp; REFRACTION</div>
         <div className="grid2">
@@ -489,7 +540,7 @@ function Screen1({ inp, set, setInp, adv, setA, setAdv, advOpen, setAdvOpen,
             <NumField label="PFV" unit="Δ · optional" step="1" value={adv.pfv} onChange={setA("pfv")} />
             <NumField label="NFV" unit="Δ · optional" step="1" value={adv.nfv} onChange={setA("nfv")} />
             <NumField label="AC/A ratio" unit="Δ/D · optional" step="0.5" value={adv.ac_a} onChange={setA("ac_a")} />
-            <SelectField label="Ocular dominance" unit="" pending value={adv.ocular_dominance}
+            <SelectField label="Ocular dominance" unit="" pending="Recorded for longitudinal modeling" value={adv.ocular_dominance}
               onChange={setA("ocular_dominance")} options={["Balanced", "OD", "OS"]} />
             <SelectField label="Binocular balance" unit="" value={adv.binocular_balance}
               onChange={setA("binocular_balance")} options={["Normal", "Mild", "Significant"]} />
@@ -574,7 +625,7 @@ function Screen1({ inp, set, setInp, adv, setA, setAdv, advOpen, setAdvOpen,
             <NumField label="Interocular difference" unit="ms · optional" step="0.1"
               value={res.vep_interocular_difference_ms} onChange={setR("vep_interocular_difference_ms")} />
             <NumField label="Normative Z-score" unit="vs. lab norms" step="0.1" value={res.vep_z_score} onChange={setR("vep_z_score")} />
-            <NumField label="VEP (unstructured)" unit="legacy · recorded only" step="0.1" pending
+            <NumField label="VEP (unstructured)" unit="legacy · recorded only" step="0.1" pending="Research-only variable"
               value={res.vep} onChange={setR("vep")} />
           </div>
           <span className="note" style={{ fontSize: 11, display: "block", marginTop: 8 }}>
@@ -589,13 +640,13 @@ function Screen1({ inp, set, setInp, adv, setA, setAdv, advOpen, setAdvOpen,
             <NumField label="Fixation stability" unit="arcmin · optional" step="0.5" value={res.fixation_stability} onChange={setR("fixation_stability")} />
             <NumField label="Blink rate" unit="blinks/min · optional" step="1" value={res.blink_rate} onChange={setR("blink_rate")} />
             <NumField label="Vergence stability" unit="0–10 · optional" step="0.5" value={res.vergence_stability} onChange={setR("vergence_stability")} />
-            <NumField label="Pupil dynamics" unit="0–10 · optional" step="0.5" pending
+            <NumField label="Pupil dynamics" unit="0–10 · optional" step="0.5" pending="Research-only variable"
               value={res.pupil_dynamics} onChange={setR("pupil_dynamics")} />
-            <NumField label="Gaze distribution" unit="0–10 · optional" step="0.5" pending
+            <NumField label="Gaze distribution" unit="0–10 · optional" step="0.5" pending="Research-only variable"
               value={res.gaze_distribution} onChange={setR("gaze_distribution")} />
-            <NumField label="ERG (unstructured)" unit="legacy · recorded only" step="0.1" pending
+            <NumField label="ERG (unstructured)" unit="legacy · recorded only" step="0.1" pending="Research-only variable"
               value={res.erg} onChange={setR("erg")} />
-            <NumField label="Eye tracking (unstructured)" unit="legacy · recorded only" step="0.1" pending
+            <NumField label="Eye tracking (unstructured)" unit="legacy · recorded only" step="0.1" pending="Research-only variable"
               value={res.eye_tracking} onChange={setR("eye_tracking")} />
           </div>
 
@@ -607,16 +658,22 @@ function Screen1({ inp, set, setInp, adv, setA, setAdv, advOpen, setAdvOpen,
             <NumField label="Trefoil" unit="µm · optional" step="0.01" value={res.trefoil} onChange={setR("trefoil")} />
             <NumField label="Corneal astigmatism" unit="D · optional" step="0.25"
               value={res.corneal_astigmatism} onChange={setR("corneal_astigmatism")} />
-            <NumField label="Corneal eccentricity" unit="e · optional" step="0.01" pending
+            <NumField label="Corneal eccentricity" unit="e · optional" step="0.01" pending="Research-only variable"
               value={res.corneal_eccentricity} onChange={setR("corneal_eccentricity")} />
           </div>
         </Disclosure>
 
         <div className="divider" style={{ margin: "20px 0" }} />
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16 }}>
-          <span className="note">{loading ? progress : "The recommendation is prepared securely from the clinical dataset."}</span>
+          <span className="note">
+            {loading
+              ? longRunning
+                ? `Processing stage: ${progress} · ${elapsedSeconds}s elapsed`
+                : `Generating secure recommendation · ${elapsedSeconds}s (target 3–8s)`
+              : "The recommendation is prepared securely from the clinical dataset."}
+          </span>
           <button className="btn btn-primary" disabled={loading} onClick={run}>
-            {loading ? "Working…" : "Generate Personalized Design"}
+            {loading ? (longRunning ? progress : "Generating…") : "Generate Personalized Design"}
           </button>
         </div>
       </div>
@@ -661,7 +718,8 @@ function EyeBlock({ eye, prefix, inp, set }) {
   );
 }
 
-// `pending` marks an input the engine accepts and stores but does not yet use.
+// `pending` marks an input the engine accepts and stores for longitudinal or
+// research analysis without implying that it affects the current fit.
 // Showing that is not cosmetic: an unmarked dead field makes a clinician
 // believe a measurement influenced the design when it did not.
 function NumField({ label, unit, step, value, onChange, pending }) {
@@ -669,7 +727,7 @@ function NumField({ label, unit, step, value, onChange, pending }) {
     <div className={pending ? "field field-pending" : "field"}>
       <label>
         {label}{unit ? <span className="unit"> · {unit}</span> : null}
-        {pending && <span className="pending-tag" title={PENDING_HINT}>not yet used</span>}
+        {pending && <span className="pending-tag" title={PENDING_HINT}>{pending}</span>}
       </label>
       <input type="number" step={step} value={value} onChange={onChange} />
     </div>
@@ -690,7 +748,7 @@ function SelectField({ label, unit, value, onChange, options, pending }) {
     <div className={pending ? "field field-pending" : "field"}>
       <label>
         {label}{unit ? <span className="unit"> · {unit}</span> : null}
-        {pending && <span className="pending-tag" title={PENDING_HINT}>not yet used</span>}
+        {pending && <span className="pending-tag" title={PENDING_HINT}>{pending}</span>}
       </label>
       <select value={value} onChange={onChange}>
         {options.map((o) => <option key={o} value={o}>{o}</option>)}
@@ -800,6 +858,7 @@ function Screen2({ pred, job, approval, submitting, onApprove, onSubmit, go, onF
                 </div>
               ))}
             </div>
+            <div className="medical-disclaimer">{MEDICAL_CLAIM_DISCLAIMER}</div>
           </div>
           <div className="banner" style={{ background: t.bg, border: `1px solid ${t.border}`, padding: "12px 14px" }}>
             <span className="banner-label" style={{ color: t.lbColor, background: t.lbBg, border: `1px solid ${t.lbBorder}` }}>{t.label}</span>
@@ -920,7 +979,7 @@ function Metric({ cap, big, sub }) {
   );
 }
 
-function Screen3({ fu, setFuVal, res, designId, go, onDownload, onRefit, canRefit, refitting }) {
+function Screen3({ fu, setFuVal, res, pending, designId, go, onDownload, onRefit, canRefit, refitting }) {
   const fmt = (x) => `${x >= 0 ? "+" : "−"}${Math.abs(x).toFixed(2)}`;
   const tier = res ? FU_TIERS[res.progression_band] : null;
 
@@ -969,27 +1028,46 @@ function Screen3({ fu, setFuVal, res, designId, go, onDownload, onRefit, canRefi
         </div>
       </div>
 
-      <div className="grid2" style={{ marginBottom: 16 }}>
-        <Metric cap="DELTA AL" big={res ? `${fmt(res.delta_al)} mm` : "—"} sub="Baseline → follow-up change" />
-        <Metric cap="ANNUALIZED DELTA AL" big={res ? `${fmt(res.annualized_delta_al)} mm/yr` : "—"} sub="Progression rate, interval-normalized" />
+      <div className="followup-metrics" style={{ marginBottom: 16 }}>
+        <Metric cap="OD ΔAL" big={res ? `${fmt(res.eyes.OD.delta_al)} mm` : "—"}
+          sub={res ? `${fmt(res.eyes.OD.annualized_delta_al)} mm/yr annualized` : "Baseline → follow-up"} />
+        <Metric cap="OS ΔAL" big={res ? `${fmt(res.eyes.OS.delta_al)} mm` : "—"}
+          sub={res ? `${fmt(res.eyes.OS.annualized_delta_al)} mm/yr annualized` : "Baseline → follow-up"} />
+        <Metric cap="ANNUALIZED ΔAL" big={res ? `${fmt(res.annualized_delta_al)} mm/yr` : "—"}
+          sub="Conservative binocular rate" />
+        <Metric cap="RESPONDER CLASSIFICATION" big={res ? res.responder_status : "—"}
+          sub={pending ? "Updating assessment…" : "Observed follow-up response"} />
       </div>
 
       {res && (
         <div className="card" style={{ padding: 16, marginBottom: 16 }}>
           <div className="cap cap-sm" style={{ marginBottom: 12 }}>CLOSED-LOOP MANAGEMENT</div>
           <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-            <FlowStep label="OD baseline" value={`${num(fu.baselineOd).toFixed(2)} mm`} />
+            <FlowStep label="Observed response" value={res.responder_status} />
             <Arrow />
-            <FlowStep label={`${fu.interval} months`} value={`${num(fu.followupOd).toFixed(2)} mm`} />
+            <FlowStep label="Original prediction" value={
+              res.deviation_from_original_prediction
+                ? `${res.deviation_from_original_prediction.original_fit_category} compatibility`
+                : "Unavailable"
+            } />
             <Arrow />
-            <FlowStep label="Annualized" value={`${res.annualized_delta_al.toFixed(2)} mm/yr`} />
+            <FlowStep label="Deviation" value={
+              res.deviation_from_original_prediction
+                ? res.deviation_from_original_prediction.direction
+                : "Not calculated"
+            } />
             <Arrow />
-            <FlowStep label="Action" value={res.action_class} highlight />
+            <FlowStep label="Recommendation" value={res.action_class} highlight />
           </div>
           <div className="note" style={{ marginTop: 10 }}>
-            {res.refit_required
-              ? "Optimization can create a new immutable revision after clinical review."
-              : "The current approved revision remains the active recommendation."}
+            {res.deviation_from_original_prediction?.summary ||
+              "Generate a design first to compare this visit with the original compatibility signal."}
+            {" "}
+            {res.action_class === "RE-FIT"
+              ? "A clinician-approved re-fit creates a new immutable design revision."
+              : res.action_class === "ADJUST"
+                ? "Review wear, compliance and clinical factors before changing the design."
+                : "Continue the current design and reassess at the scheduled interval."}
           </div>
         </div>
       )}

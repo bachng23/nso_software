@@ -87,8 +87,7 @@ def test_followup_is_per_eye_and_uses_only_three_action_classes():
     assert result["eyes"]["OS"]["delta_al"] == pytest.approx(0.05)
     assert result["comfort_change"] == -2
     assert result["action_class"] in {
-        "MAINTAIN CURRENT DESIGN", "DESIGN OPTIMIZATION RECOMMENDED",
-        "CLINICAL REVIEW RECOMMENDED",
+        "CONTINUE", "ADJUST", "RE-FIT",
     }
 
 
@@ -96,9 +95,61 @@ def test_all_three_followup_action_classes_are_reachable():
     maintain = nso.clinical_followup(24.8, 24.82, 12)
     optimize = nso.clinical_followup(24.8, 25.0, 6)
     review = nso.clinical_followup(24.8, 24.82, 12, compliance="Poor")
-    assert maintain["action_class"] == "MAINTAIN CURRENT DESIGN"
-    assert optimize["action_class"] == "DESIGN OPTIMIZATION RECOMMENDED"
-    assert review["action_class"] == "CLINICAL REVIEW RECOMMENDED"
+    assert maintain["action_class"] == "CONTINUE"
+    assert optimize["action_class"] == "RE-FIT"
+    assert review["action_class"] == "ADJUST"
+
+
+def test_followup_closes_loop_against_server_stored_prediction():
+    client = TestClient(api.app)
+    design = client.post("/api/predict", json=payload(13.1)).json()
+    response = client.post("/api/followup", json={
+        "design_id": design["design_id"],
+        "baseline_od_al": 24.8, "followup_od_al": 25.0,
+        "baseline_os_al": 24.7, "followup_os_al": 24.75,
+        "interval_months": 6, "compliance": "Good",
+    })
+    assert response.status_code == 200
+    result = response.json()
+    assert set(result["eyes"]) == {"OD", "OS"}
+    assert result["responder_status"] == "Suboptimal responder"
+    assert result["action_class"] == "RE-FIT"
+    deviation = result["deviation_from_original_prediction"]
+    assert deviation["original_fit_score"] == design["predicted"]["myopia_management_fit"]
+    assert deviation["observed_responder_classification"] == result["responder_status"]
+    assert deviation["direction"] in {"Aligned", "More favorable", "Less favorable"}
+
+
+def test_followup_unknown_design_cannot_supply_an_unverified_prediction():
+    response = TestClient(api.app).post("/api/followup", json={
+        "design_id": "NSO-000000000000000000000000",
+        "baseline_al": 24.8, "followup_al": 24.9, "interval_months": 6,
+    })
+    assert response.status_code == 404
+
+
+def test_supervisor_copy_and_medical_claim_disclaimer_are_present():
+    source = (Path(__file__).parents[2] / "src/frontend/app/page.js").read_text()
+    assert "V2.1 · Clinical Decision Support — Knowledge-guided personalization engine" in source
+    assert "13 clinical data groups" in source
+    assert "This score estimates design–phenotype compatibility and does not predict treatment efficacy or axial-length reduction." in source
+    assert "not yet used" not in source.lower()
+    assert "V2 · Research Prototype" not in source
+
+
+def test_processing_stages_appear_after_ten_seconds_and_api_is_pre_warmed():
+    source = (Path(__file__).parents[2] / "src/frontend/app/page.js").read_text()
+    assert "PROCESSING_STAGES" in source
+    assert "}, 10000);" in source
+    assert "fetch(`${API}/api/health`" in source
+
+
+def test_design_id_uses_server_side_keyed_digest():
+    source = (Path(__file__).parent / "nso/design/identity.py").read_text()
+    assert "hmac.new" in source
+    assert "DESIGN_ID_SECRET" in source
+    frontend = (Path(__file__).parents[2] / "src/frontend/app/page.js").read_text()
+    assert "DESIGN_ID_SECRET" not in frontend
 
 
 def test_digital_time_is_a_fraction_not_an_independent_near_exposure():

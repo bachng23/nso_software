@@ -550,7 +550,10 @@ def test_followup_report_is_a_pdf(client):
 
 
 def test_health(client):
-    assert client.get("/api/health").json()["version"] == "2.0"
+    response = client.get("/api/health")
+    assert response.json()["version"] == "2.1"
+    assert float(response.headers["X-NSO-Processing-Ms"]) >= 0
+    assert response.headers["Server-Timing"].startswith("app;dur=")
 
 
 # --------------------------------------------------------------------------- #

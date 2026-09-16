@@ -11,6 +11,12 @@ services:
     startCommand: uvicorn api:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /api/health
     envVars:
+      - key: NSO_ENV
+        value: production
+      # Blinds deterministic Design IDs with a server-only key. Render creates
+      # the value; it must never be exposed through NEXT_PUBLIC_* variables.
+      - key: DESIGN_ID_SECRET
+        generateValue: true
       - key: ALLOWED_ORIGINS
         sync: false   # set to https://your-frontend-domain in the dashboard
       # One key per vendor role for /api/manufacturing/*. A role with no key

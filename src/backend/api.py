@@ -24,6 +24,7 @@ API docs at http://127.0.0.1:8000/docs
 import hashlib
 import json
 import os
+import time
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, Header, HTTPException, Response
@@ -33,7 +34,14 @@ from pydantic import BaseModel, ConfigDict
 import nso as v2
 import report
 
-app = FastAPI(title="NSO AI-PC Fitting API", version="2.0")
+_is_production = os.environ.get("NSO_ENV", "development").lower() == "production"
+app = FastAPI(
+    title="NSO AI-PC Fitting API",
+    version="2.1",
+    docs_url=None if _is_production else "/docs",
+    redoc_url=None if _is_production else "/redoc",
+    openapi_url=None if _is_production else "/openapi.json",
+)
 
 # CORS: allow any *.vercel.app (production + preview deploys) and localhost.
 # For a custom domain later, add it via ALLOWED_ORIGINS (comma-separated).
@@ -69,6 +77,17 @@ def _vendor_keys() -> dict:
 VENDOR_KEYS = _vendor_keys()
 
 
+@app.middleware("http")
+async def add_processing_time(request, call_next):
+    """Expose coarse request timing without exposing internal pipeline details."""
+    started = time.perf_counter()
+    response = await call_next(request)
+    elapsed_ms = (time.perf_counter() - started) * 1000
+    response.headers["Server-Timing"] = f"app;dur={elapsed_ms:.1f}"
+    response.headers["X-NSO-Processing-Ms"] = f"{elapsed_ms:.1f}"
+    return response
+
+
 def _authorize_vendor(api_key: str, segment: str) -> str:
     """Resolve a key to a vendor role and check it may pull this segment."""
     if not VENDOR_KEYS:
@@ -89,7 +108,7 @@ def health():
     predictor = v2.get_predictor()
     return {
         "status": "ok",
-        "version": "2.0",
+        "version": "2.1",
         "engine": predictor.name,
         "predictor_version": predictor.version,
         "feature_schema": v2.FeatureVector.SCHEMA_VERSION,
@@ -230,9 +249,19 @@ class FollowupIn(BaseModel):
 class FollowupReportIn(PredictIn):
     """Full patient inputs (for the prediction body) + the follow-up readings,
     so the follow-up report is the prediction report with a follow-up section."""
-    baseline_al: float
-    followup_al: float
+    design_id: Optional[str] = None
+    baseline_al: Optional[float] = None
+    followup_al: Optional[float] = None
+    baseline_od_al: Optional[float] = None
+    followup_od_al: Optional[float] = None
+    baseline_os_al: Optional[float] = None
+    followup_os_al: Optional[float] = None
     interval_months: int
+    baseline_comfort: Optional[float] = None
+    current_comfort: Optional[float] = None
+    visual_stress_score_followup: Optional[float] = None
+    average_wear_hours: Optional[float] = None
+    compliance: Optional[str] = None
 
 
 class ManufacturingSubmitIn(BaseModel):
@@ -292,6 +321,7 @@ class FollowupResponse(BaseModel):
     comfort_change: Optional[float]
     action_class: str
     responder_status: str
+    deviation_from_original_prediction: Optional[Dict[str, Any]]
     exposure: Dict[str, Any]
 
 
@@ -331,6 +361,11 @@ def followup(inp: FollowupIn):
     current = inp.followup_al if inp.followup_al is not None else inp.followup_od_al
     if baseline is None or current is None:
         raise HTTPException(status_code=422, detail="Baseline and follow-up axial length are required")
+    expectation = {}
+    if inp.design_id:
+        if not v2.REGISTRY.known(inp.design_id):
+            raise HTTPException(status_code=404, detail="Unknown design ID")
+        expectation = v2.REGISTRY._get(inp.design_id).get("clinical_expectation", {})
     result = v2.clinical_followup(
         baseline, current, inp.interval_months, inp.current_support_level,
         baseline_od_al=inp.baseline_od_al, followup_od_al=inp.followup_od_al,
@@ -338,6 +373,8 @@ def followup(inp: FollowupIn):
         baseline_comfort=inp.baseline_comfort, current_comfort=inp.current_comfort,
         visual_stress_score=inp.visual_stress_score,
         average_wear_hours=inp.average_wear_hours, compliance=inp.compliance,
+        original_fit_score=expectation.get("myopia_management_fit"),
+        original_prediction_confidence=expectation.get("prediction_confidence"),
     )
     if inp.design_id:
         outcome_id = "OUT-" + hashlib.sha256(
@@ -464,13 +501,33 @@ def report_prediction(inp: PredictIn):
 @app.post("/api/report/followup")
 def report_followup(inp: FollowupReportIn):
     result = _clinical(inp)
+    baseline = inp.baseline_al if inp.baseline_al is not None else inp.baseline_od_al
+    current = inp.followup_al if inp.followup_al is not None else inp.followup_od_al
+    if baseline is None or current is None:
+        raise HTTPException(status_code=422, detail="Baseline and follow-up axial length are required")
+    expectation = {}
+    if inp.design_id:
+        if not v2.REGISTRY.known(inp.design_id):
+            raise HTTPException(status_code=404, detail="Unknown design ID")
+        expectation = v2.REGISTRY._get(inp.design_id).get("clinical_expectation", {})
     fu = v2.clinical_followup(
-        inp.baseline_al, inp.followup_al, inp.interval_months
+        baseline, current, inp.interval_months,
+        baseline_od_al=inp.baseline_od_al, followup_od_al=inp.followup_od_al,
+        baseline_os_al=inp.baseline_os_al, followup_os_al=inp.followup_os_al,
+        baseline_comfort=inp.baseline_comfort, current_comfort=inp.current_comfort,
+        visual_stress_score=inp.visual_stress_score_followup,
+        average_wear_hours=inp.average_wear_hours, compliance=inp.compliance,
+        original_fit_score=expectation.get("myopia_management_fit"),
+        original_prediction_confidence=expectation.get("prediction_confidence"),
     )
     followup_block = {
         "ctx": {
-            "baseline_al": inp.baseline_al,
-            "followup_al": inp.followup_al,
+            "baseline_al": baseline,
+            "followup_al": current,
+            "baseline_od_al": inp.baseline_od_al,
+            "followup_od_al": inp.followup_od_al,
+            "baseline_os_al": inp.baseline_os_al,
+            "followup_os_al": inp.followup_os_al,
             "interval_months": inp.interval_months,
         },
         "result": fu,

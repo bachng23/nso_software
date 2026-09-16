@@ -1,8 +1,8 @@
 import "./globals.css";
 
 export const metadata = {
-  title: "NSO AI-PC Fitting V2",
-  description: "Multi-domain visual phenotyping and personalized optical design — clinical layer",
+  title: "NSO AI-PC V2.1 · Clinical Decision Support",
+  description: "Knowledge-guided personalization engine for clinical decision support",
 };
 
 export default function RootLayout({ children }) {

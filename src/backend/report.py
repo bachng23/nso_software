@@ -4,8 +4,8 @@ PDF report generation for the NSO AI-PC Fitting web UI.
 Clinical-layer report: patient input, visual phenotype, AI-derived indices and
 predicted outcomes. It carries the Design ID, never the optical recipe — the
 printed report is as IP-safe as the API response, since a PDF leaves the clinic
-more easily than a browser session does. Rule-based, so the report also carries
-the "not clinically validated" disclaimer.
+more easily than a browser session does. The report carries explicit clinical
+decision-support and medical-claim disclaimers.
 """
 
 from datetime import date
@@ -83,14 +83,14 @@ def _doc(buf, title):
 
 
 def _header(story, title, subtitle):
-    badge = Table([["  Rule-based  "]], colWidths=[28 * mm])
+    badge = Table([["  Knowledge-guided  "]], colWidths=[36 * mm])
     badge.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#e6f1fb")),
         ("TEXTCOLOR", (0, 0), (-1, -1), colors.HexColor("#0c447c")),
         ("FONT", (0, 0), (-1, -1), "Helvetica-Bold", 8),
         ("TOPPADDING", (0, 0), (-1, -1), 4), ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
     ]))
-    row = Table([[Paragraph(title, _H1), badge]], colWidths=[128 * mm, 40 * mm])
+    row = Table([[Paragraph(title, _H1), badge]], colWidths=[120 * mm, 48 * mm])
     row.setStyle(TableStyle([
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("LEFTPADDING", (0, 0), (-1, -1), 0),
@@ -102,10 +102,9 @@ def _header(story, title, subtitle):
 
 
 _DISCLAIMER = (
-    "This report is produced by a rule-based engine using fixed deterministic "
-    "formulas — no model has been trained on clinical data. Probabilities and scores are "
-    "concept estimates for demonstration only and are <b>not a clinically validated outcome</b>. "
-    "Not intended for diagnosis or prescription."
+    "This score estimates design–phenotype compatibility and does not predict "
+    "treatment efficacy or axial-length reduction. This clinical decision-support "
+    "output is not intended for autonomous diagnosis or prescription."
 )
 
 
@@ -150,12 +149,12 @@ def build_report(inputs, r, followup=None):
     redact.
     """
     buf = BytesIO()
-    doc = _doc(buf, "NSO AI-PC Fitting Report")
+    doc = _doc(buf, "NSO AI-PC V2.1 Clinical Decision Support Report")
     s = []
     subtitle = ("Personalized optical design, with a follow-up visit appended."
                 if followup else
                 "Personalized optical design for the entered clinical profile.")
-    _header(s, "NSO AI-PC Fitting Report", subtitle)
+    _header(s, "NSO AI-PC V2.1 Clinical Decision Support", subtitle)
 
     s.append(Paragraph("CLINICAL INPUT", _CAP))
     s.append(_kv([
@@ -198,7 +197,10 @@ def build_report(inputs, r, followup=None):
         "The authorized design record is held securely under the Design ID above.", _SMALL))
 
     s.append(Paragraph("PREDICTED PERFORMANCE", _CAP))
-    s.append(_kv([[label, f"{r['predicted'][key]}%"] for key, label in _PREDICTED_LABELS]))
+    s.append(_kv([[label, f"{r['predicted'][key]} / 100"] for key, label in _PREDICTED_LABELS]))
+    s.append(Paragraph(
+        "This score estimates design–phenotype compatibility and does not predict "
+        "treatment efficacy or axial-length reduction.", _SMALL))
 
     s.append(Paragraph("SELECTION RATIONALE", _CAP))
     s.append(Paragraph(
@@ -218,15 +220,34 @@ def build_report(inputs, r, followup=None):
     if followup:
         ctx, fr = followup["ctx"], followup["result"]
         sign = "+" if fr["delta_al"] >= 0 else "\u2212"
+        od = fr["eyes"]["OD"]
+        os = fr["eyes"]["OS"]
+        od_sign = "+" if od["delta_al"] >= 0 else "\u2212"
+        os_sign = "+" if os["delta_al"] >= 0 else "\u2212"
+        deviation = fr.get("deviation_from_original_prediction")
         s.append(PageBreak())
         s.append(Paragraph("FOLLOW-UP VISIT", _CAP))
         s.append(_kv([
-            ["Baseline AL", f"{ctx['baseline_al']:g} mm"],
-            ["Follow-up AL", f"{ctx['followup_al']:g} mm"],
+            ["OD baseline / follow-up AL",
+             f"{(ctx.get('baseline_od_al') or ctx['baseline_al']):g} / "
+             f"{(ctx.get('followup_od_al') or ctx['followup_al']):g} mm"],
+            ["OS baseline / follow-up AL",
+             f"{(ctx.get('baseline_os_al') or ctx['baseline_al']):g} / "
+             f"{(ctx.get('followup_os_al') or ctx['followup_al']):g} mm"],
             ["Follow-up interval", f"{ctx['interval_months']:g} months"],
-            ["Delta AL", f"{sign}{abs(fr['delta_al']):.3f} mm"],
-            ["Annualized delta AL", f"{sign}{abs(fr['annualized_delta_al']):.3f} mm/year"],
+            ["OD delta / annualized delta AL",
+             f"{od_sign}{abs(od['delta_al']):.3f} mm / "
+             f"{od_sign}{abs(od['annualized_delta_al']):.3f} mm/year"],
+            ["OS delta / annualized delta AL",
+             f"{os_sign}{abs(os['delta_al']):.3f} mm / "
+             f"{os_sign}{abs(os['annualized_delta_al']):.3f} mm/year"],
+            ["Conservative binocular annualized delta AL",
+             f"{sign}{abs(fr['annualized_delta_al']):.3f} mm/year"],
             ["Progression band", str(fr["progression_band"])],
+            ["Responder classification", str(fr["responder_status"])],
+            ["Deviation from original prediction",
+             str(deviation["summary"]) if deviation else "Original prediction unavailable"],
+            ["Management action", str(fr["action_class"])],
             ["Recommendation", str(fr["advice"])],
             ["Next support level",
              f"{fr['next_support_level']} \u2014 {_SUPPORT_HINT.get(fr['next_support_level'], '')}"],

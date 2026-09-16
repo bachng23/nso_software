@@ -1,7 +1,8 @@
-# NSO AI-PC Fitting V2 — AI-Assisted Multi-Domain Visual Phenotyping and Personalized Optical Design
+# NSO AI-PC V2.1 — Clinical Decision Support
 
-A myopia-control lens fitting platform. Deterministic, rule-based engine (no
-trained model) exposed through a FastAPI backend and a Next.js frontend.
+A knowledge-guided personalization engine exposed through a FastAPI backend
+and a Next.js clinical frontend. It is a clinical-pilot prototype, not an
+autonomous diagnostic or treatment-efficacy prediction system.
 
 ```
 src/
@@ -38,7 +39,8 @@ AI-PC Server
   Authorized manufacturers
 ```
 
-The browser receives `NSO-P425W` and a set of predicted percentages. It never
+The browser receives an opaque `NSO-<24 HEX>` Design ID and clinical `/100`
+compatibility scores. It never
 receives SA strength, microstructure geometry, fill factor, spatial density,
 jitter or temporal asymmetry — not in the UI, and not in the JSON behind it, so
 opening DevTools reveals nothing. `nso_v2.assert_no_design_leak` screens every
@@ -49,12 +51,20 @@ manufacturing CSV. Manufacturing is submit-only.
 
 ### Three input tiers
 
-1. **Quick Fitting** (default, ~13 inputs) — enough on its own to generate a design.
+1. **Quick Fitting** (default, 13 clinical data groups) — enough on its own to generate a design.
 2. **Advanced Clinical Data** — full binocular, accommodative and neurovisual workup.
 3. **Research Mode** — CSF curve, VEP/ERG, eye tracking, wavefront.
 
 Optional measurements raise prediction confidence; none of them are required,
 and none of them are design parameters — the client cannot steer the design.
+
+The score disclaimer shown in both the UI and PDF is: “This score estimates
+design–phenotype compatibility and does not predict treatment efficacy or
+axial-length reduction.”
+
+For production, `DESIGN_ID_SECRET` must be a stable server-only secret. The
+Render blueprint generates it automatically; never expose it through a
+`NEXT_PUBLIC_*` variable.
 
 ### Package layout
 
