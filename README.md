@@ -1,4 +1,4 @@
-# NSO AI-PC V2.1 — Clinical Decision Support
+# NSO AI-PC V2.2 — Clinical Decision Support
 
 A knowledge-guided personalization engine exposed through a FastAPI backend
 and a Next.js clinical frontend. It is a clinical-pilot prototype, not an
@@ -51,9 +51,9 @@ manufacturing CSV. Manufacturing is submit-only.
 
 ### Three input tiers
 
-1. **Quick Fitting** (default, 13 clinical data groups) — enough on its own to generate a design.
-2. **Advanced Clinical Data** — full binocular, accommodative and neurovisual workup.
-3. **Research Mode** — CSF curve, VEP/ERG, eye tracking, wavefront.
+1. **Core Clinical Inputs** (13 core clinical data groups) — sufficient for an initial recommendation.
+2. **Enhanced Assessment** — optional confidence support for borderline and complex cases.
+3. **Advanced / Research Assessment** — CSF curve, VEP/ERG, eye tracking and wavefront.
 
 Optional measurements raise prediction confidence; none of them are required,
 and none of them are design parameters — the client cannot steer the design.
@@ -87,6 +87,7 @@ nso/
     base.py             Predictor protocol, OutcomePrediction, registry
     rule_based.py       today's deterministic rules
   features.py         ← the ML seam: versioned feature vectors + training rows
+  governance.py       immutable model registry, validation gates, versions and lineage
   phenotype.py        R/B/S/N/T grading
   patient.py          clinical input (six sections)
   recipe.py           the design recipe (Design IP) — dependency-free
@@ -109,6 +110,7 @@ Other modules:
 
 - `nso_core.py` — the legacy computation kernel and the design-strength profiles.
 - `api.py` — FastAPI: `/api/predict`, `/api/followup`, `/api/refit`,
+  `/api/clinical/override`, `/api/governance/lineage/*`,
   `/api/manufacturing/*`, `/api/report/*`, `/api/health`.
 - `report.py` — clinical-layer PDF report. Carries the Design ID, not the recipe.
 - `nso_v2.py` — deprecated shim re-exporting `nso`, kept so the pre-package test
@@ -166,7 +168,9 @@ class GradientBoostedPredictor:
 nso.register(GradientBoostedPredictor(), activate=True)
 ```
 
-Nothing else changes. The design space, the loss weights and the clinical
+The candidate must then pass all six validation gates and receive explicit
+human promotion in the model registry; registration alone never replaces the
+production model. Nothing else changes. The design space, the loss weights and the clinical
 payload are untouched, because the predictor answers *what will happen* while
 `design/candidates.py` decides *what we value* — a model can change the forecast
 without silently changing clinical priorities. Every result is stamped with the
@@ -187,7 +191,7 @@ uvicorn api:app --reload --port 8000
 
 API docs: http://127.0.0.1:8000/docs · health: http://127.0.0.1:8000/api/health
 
-Tests: `python -m pytest -q`  ·  Streamlit app: `streamlit run nso_mvp.py`
+Tests: `python -m pytest -q`
 
 ### 2. Frontend (Next.js)
 

@@ -149,12 +149,12 @@ def build_report(inputs, r, followup=None):
     redact.
     """
     buf = BytesIO()
-    doc = _doc(buf, "NSO AI-PC V2.1 Clinical Decision Support Report")
+    doc = _doc(buf, "NSO AI-PC V2.2 Clinical Decision Support Report")
     s = []
     subtitle = ("Personalized optical design, with a follow-up visit appended."
                 if followup else
                 "Personalized optical design for the entered clinical profile.")
-    _header(s, "NSO AI-PC V2.1 Clinical Decision Support", subtitle)
+    _header(s, "NSO AI-PC V2.2 Clinical Decision Support", subtitle)
 
     s.append(Paragraph("CLINICAL INPUT", _CAP))
     s.append(_kv([
@@ -169,7 +169,9 @@ def build_report(inputs, r, followup=None):
         ["Visual stress", f"{inputs['visual_stress_score']:g} / 10"],
         ["Near work / digital", f"{inputs['near_hours']:g} + {inputs['digital_hours']:g} h/day"],
         ["Outdoor time", f"{inputs['outdoor_hours']:g} h/day"],
-        ["Primary optimization goal", str(inputs["primary_goal"])],
+        ["Optimization objective", str(
+            inputs.get("optimization_objective") or inputs.get("primary_goal", "Not specified")
+        )],
     ]))
 
     ph = r["phenotype"]
@@ -188,6 +190,7 @@ def build_report(inputs, r, followup=None):
     s.append(Paragraph("RECOMMENDED PERSONALIZED OPTICAL DESIGN", _CAP))
     s.append(_kv([
         ["NSO personalized design", str(r["design_id"])],
+        ["Design version", str(r.get("design_version", "V1"))],
         ["Right eye (OD)", r["eyes"]["OD"]["profile_label"]],
         ["Left eye (OS)", r["eyes"]["OS"]["profile_label"]],
         ["Binocular pair optimization", str(r["binocular_pair"])],
@@ -196,11 +199,26 @@ def build_report(inputs, r, followup=None):
     s.append(Paragraph(
         "The authorized design record is held securely under the Design ID above.", _SMALL))
 
-    s.append(Paragraph("PREDICTED PERFORMANCE", _CAP))
+    s.append(Paragraph("MODEL PREDICTION — PRE-TREATMENT ESTIMATE", _CAP))
     s.append(_kv([[label, f"{r['predicted'][key]} / 100"] for key, label in _PREDICTED_LABELS]))
     s.append(Paragraph(
         "This score estimates design–phenotype compatibility and does not predict "
         "treatment efficacy or axial-length reduction.", _SMALL))
+    s.append(_kv([
+        ["Prediction state", str(r.get("prediction_state", "Research Estimate"))],
+        ["Confidence category", str(r.get("prediction_confidence_category", "Not available"))],
+        ["Response distribution", str(r.get("predicted_response", {}).get(
+            "status", "Not calibrated for clinical probability reporting"
+        ))],
+    ]))
+
+    contributors = r.get("key_clinical_contributors", [])
+    if contributors:
+        s.append(Paragraph("KEY CLINICAL CONTRIBUTORS", _CAP))
+        s.append(_kv([
+            [item["factor"], f"{item['observed_value']} · clinical relevance {item['relative_influence']}"]
+            for item in contributors
+        ]))
 
     s.append(Paragraph("SELECTION RATIONALE", _CAP))
     s.append(Paragraph(
@@ -226,7 +244,7 @@ def build_report(inputs, r, followup=None):
         os_sign = "+" if os["delta_al"] >= 0 else "\u2212"
         deviation = fr.get("deviation_from_original_prediction")
         s.append(PageBreak())
-        s.append(Paragraph("FOLLOW-UP VISIT", _CAP))
+        s.append(Paragraph("OBSERVED CLINICAL OUTCOME — FOLLOW-UP VISIT", _CAP))
         s.append(_kv([
             ["OD baseline / follow-up AL",
              f"{(ctx.get('baseline_od_al') or ctx['baseline_al']):g} / "
@@ -244,7 +262,11 @@ def build_report(inputs, r, followup=None):
             ["Conservative binocular annualized delta AL",
              f"{sign}{abs(fr['annualized_delta_al']):.3f} mm/year"],
             ["Progression band", str(fr["progression_band"])],
-            ["Responder classification", str(fr["responder_status"])],
+            ["Observed response classification", str(
+                fr.get("observed_response_classification", fr["responder_status"])
+            )],
+            ["Assessment status", str(fr.get("assessment_status", "Observed Clinical Outcome"))],
+            ["CSF change", str(fr.get("csf_change") if fr.get("csf_change") is not None else "Not measured")],
             ["Deviation from original prediction",
              str(deviation["summary"]) if deviation else "Original prediction unavailable"],
             ["Management action", str(fr["action_class"])],

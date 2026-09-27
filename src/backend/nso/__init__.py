@@ -70,6 +70,17 @@ from .features import (
     training_row,
 )
 from .ip import DesignLeakError, assert_no_design_leak
+from .governance import (
+    CLINICAL_SCHEMA_VERSION,
+    DATASET_VERSION,
+    GovernanceError,
+    GovernanceRegistry,
+    MODEL_STATUSES,
+    PRODUCT_FAMILIES,
+    SOFTWARE_VERSION,
+    VALIDATION_GATES,
+    model_id_for,
+)
 from .manufacturing import (
     REGISTRY,
     SEGMENT_CODES,
@@ -101,7 +112,7 @@ from .predictors import (
 )
 from .recipe import DesignRecipe
 
-__version__ = "2.1.0"
+__version__ = "2.2.0"
 
 __all__ = [
     "EyeInput", "PatientInput", "DesignRecipe", "PRIMARY_GOALS",
@@ -129,4 +140,7 @@ __all__ = [
     "run_pipeline", "describe_pipeline", "PipelineResult", "STAGES",
     "SUPPORT_LEVELS", "CLINICAL_ADVICE",
     "assert_no_design_leak", "DesignLeakError",
+    "GovernanceRegistry", "GovernanceError", "VALIDATION_GATES",
+    "MODEL_STATUSES", "PRODUCT_FAMILIES", "SOFTWARE_VERSION",
+    "CLINICAL_SCHEMA_VERSION", "DATASET_VERSION", "model_id_for",
 ]

@@ -408,24 +408,24 @@ class EngineConfig:
             # An earlier table let control fall to 0.10 for most goals, which
             # made every non-myopia goal pick the weakest design in the grid
             # and collapsed nine goals into two answers.
-            "Myopia Management": {
+            "Myopia Control": {
                 "control": 0.45, "acuity": 0.15, "comfort": 0.13,
                 "adaptation": 0.12, "robustness": 0.10, "manufacturability": 0.05},
             "Visual Comfort": {
                 "control": 0.20, "acuity": 0.15, "comfort": 0.30,
                 "adaptation": 0.25, "robustness": 0.05, "manufacturability": 0.05},
-            "Digital / Near-work Comfort": {
+            "Near-work Endurance": {
                 "control": 0.25, "acuity": 0.12, "comfort": 0.30,
                 "adaptation": 0.23, "robustness": 0.05, "manufacturability": 0.05},
-            "Binocular Visual Support": {
-                "control": 0.25, "acuity": 0.15, "comfort": 0.25,
-                "adaptation": 0.25, "robustness": 0.05, "manufacturability": 0.05},
-            "Contrast Optimization": {
+            "Contrast Preservation": {
                 "control": 0.25, "acuity": 0.38, "comfort": 0.10,
                 "adaptation": 0.07, "robustness": 0.15, "manufacturability": 0.05},
-            "Balanced Optimization": {
-                "control": 0.30, "acuity": 0.18, "comfort": 0.20,
-                "adaptation": 0.17, "robustness": 0.10, "manufacturability": 0.05},
+            "Presbyopia Support": {
+                "control": 0.15, "acuity": 0.20, "comfort": 0.25,
+                "adaptation": 0.25, "robustness": 0.10, "manufacturability": 0.05},
+            "Neurovisual Comfort": {
+                "control": 0.20, "acuity": 0.12, "comfort": 0.28,
+                "adaptation": 0.30, "robustness": 0.05, "manufacturability": 0.05},
         }
     )
 
@@ -437,13 +437,18 @@ class EngineConfig:
         take the fitting endpoint down.
         """
         legacy_aliases = {
-            "Digital Visual Comfort": "Digital / Near-work Comfort",
-            "Reading": "Digital / Near-work Comfort",
-            "Near Work": "Binocular Visual Support",
-            "Presbyopia": "Contrast Optimization",
-            "Driving": "Contrast Optimization",
-            "Night Vision": "Contrast Optimization",
-            "Sports Vision": "Balanced Optimization",
+            "Myopia Management": "Myopia Control",
+            "Digital / Near-work Comfort": "Near-work Endurance",
+            "Binocular Visual Support": "Neurovisual Comfort",
+            "Contrast Optimization": "Contrast Preservation",
+            "Balanced Optimization": "Neurovisual Comfort",
+            "Digital Visual Comfort": "Near-work Endurance",
+            "Reading": "Near-work Endurance",
+            "Near Work": "Near-work Endurance",
+            "Presbyopia": "Presbyopia Support",
+            "Driving": "Contrast Preservation",
+            "Night Vision": "Contrast Preservation",
+            "Sports Vision": "Neurovisual Comfort",
             "General Visual Comfort": "Visual Comfort",
         }
         return self.goal_loss_weights.get(

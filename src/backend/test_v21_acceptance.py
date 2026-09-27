@@ -130,7 +130,7 @@ def test_followup_unknown_design_cannot_supply_an_unverified_prediction():
 
 def test_supervisor_copy_and_medical_claim_disclaimer_are_present():
     source = (Path(__file__).parents[2] / "src/frontend/app/page.js").read_text()
-    assert "V2.1 · Clinical Decision Support — Knowledge-guided personalization engine" in source
+    assert "V2.2 · Clinical Decision Support — Knowledge-guided personalization engine" in source
     assert "13 clinical data groups" in source
     assert "This score estimates design–phenotype compatibility and does not predict treatment efficacy or axial-length reduction." in source
     assert "not yet used" not in source.lower()
@@ -201,7 +201,7 @@ def test_oem_package_is_versioned_and_expires():
         design["design_id"], "AV", oem_id="assembly", capability_version="1.0"
     )
     assert package["oem_capability_version"] == "1.0"
-    assert package["projection_version"] == "2.1"
+    assert package["projection_version"] == "2.2"
     assert package["expires_at"] > package["issued_at"]
     with pytest.raises(ValueError, match="capability version"):
         registry.manufacturing_segments(

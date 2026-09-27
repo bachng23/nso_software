@@ -111,6 +111,7 @@ class DesignStore(Protocol):
     def next_job_serial(self) -> int: ...
     def put_record(self, domain: str, record_id: str, payload: Dict[str, Any]) -> None: ...
     def get_record(self, domain: str, record_id: str) -> Dict[str, Any]: ...
+    def list_records(self, domain: str) -> list[Dict[str, Any]]: ...
     def append_related(self, domain: str, object_id: str, payload: Dict[str, Any]) -> str: ...
     def related(self, domain: str, object_id: str) -> list[Dict[str, Any]]: ...
     def append_audit(self, payload: Dict[str, Any]) -> str: ...
@@ -166,6 +167,13 @@ class InMemoryDesignStore:
             return loads_entry(dumps_entry(self._records[(domain, record_id)]))
         except KeyError:
             raise KeyError(record_id) from None
+
+    def list_records(self, domain: str) -> list[Dict[str, Any]]:
+        return [
+            loads_entry(dumps_entry(payload))
+            for (record_domain, _), payload in self._records.items()
+            if record_domain == domain
+        ]
 
     def append_related(self, domain: str, object_id: str, payload: Dict[str, Any]) -> str:
         record_id = payload.get("record_id") or uuid.uuid4().hex
@@ -354,6 +362,17 @@ class SqlDesignStore:
         if row is None:
             raise KeyError(record_id)
         return loads_entry(row[0])
+
+    def list_records(self, domain: str) -> list[Dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.cursor().execute(
+                self._sql(
+                    "SELECT payload FROM domain_records WHERE domain = ? "
+                    "ORDER BY created_at, record_id"
+                ),
+                (domain,),
+            ).fetchall()
+        return [loads_entry(row[0]) for row in rows]
 
     def append_related(self, domain: str, object_id: str, payload: Dict[str, Any]) -> str:
         record_id = payload.get("record_id") or uuid.uuid4().hex

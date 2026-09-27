@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import uuid
 from dataclasses import asdict, replace
 from typing import Any, Dict, List
 
@@ -27,6 +28,11 @@ from .features import (
     out_of_range_measurements,
     plausibility,
     plausibly_measured_domains,
+)
+from .governance import (
+    DATASET_VERSION,
+    GovernanceRegistry,
+    SOFTWARE_VERSION,
 )
 from .ip import assert_no_design_leak
 from .manufacturing import REGISTRY
@@ -89,6 +95,23 @@ def _stable_id(prefix: str, payload: Any) -> str:
     return f"{prefix}-{digest}"
 
 
+def _key_clinical_contributors(p: PatientInput, indices: Dict[str, float]) -> List[Dict[str, Any]]:
+    """Structured, clinical-only explanation without exposing design internals."""
+    candidates = [
+        ("Axial length", max(p.od.axial_length, p.os.axial_length), indices["refractive_risk"]),
+        ("Age", p.age, indices["refractive_risk"]),
+        ("Near-work exposure", p.near_hours, indices["accommodative_stress"]),
+        ("Outdoor exposure", p.outdoor_hours, max(0.0, 100 - indices["refractive_risk"])),
+        ("Binocular / accommodative findings", p.near_phoria, max(indices["binocular_load"], indices["accommodative_stress"])),
+        ("Contrast sensitivity", p.csf_band, max(0.0, 100 - indices["spatial_frequency_sensitivity"])),
+        ("Pupil", p.photopic_pupil, indices["dynamic_robustness"]),
+    ]
+    return [
+        {"factor": name, "observed_value": value, "relative_influence": _pct(influence)}
+        for name, value, influence in sorted(candidates, key=lambda row: row[2], reverse=True)[:5]
+    ]
+
+
 def run_fitting(
     p: PatientInput,
     site: str | None = None,
@@ -135,6 +158,11 @@ def run_fitting(
             "config_version": cfg.version,
             "predictor": get_predictor().name,
             "predictor_version": get_predictor().version,
+            # Every Generate action is a distinct governed design record even
+            # when the clinical profile happens to be identical. The keyed
+            # digest keeps the public handle opaque; this nonce prevents two
+            # clinical decisions from collapsing into one identity.
+            "generation_nonce": uuid.uuid4().hex,
         }
     )
     design_id = design_id_override or revision_id_for(root_design_id, revision)
@@ -168,6 +196,21 @@ def run_fitting(
         + cfg.confidence_coverage_span * coverage
         + cfg.confidence_plausibility_span * plausible
     )
+    predictor = get_predictor()
+    governance = GovernanceRegistry(REGISTRY._store_impl)
+    model_record = governance.ensure_runtime_model(predictor)
+    model_id = model_record["model_id"]
+    response_state = (
+        "Outside Validated Range" if out_of_range
+        else "Low Confidence" if confidence < 70
+        else "Research Estimate"
+    )
+    calibrated_distribution_available = bool(
+        model_record.get("calibrated_probabilities")
+        and governance.model_status(model_id) == "Production"
+        and not out_of_range
+    )
+    contributors = _key_clinical_contributors(p, indices)
 
     overruled = (
         per_eye["OD"]["selected"] is not od_candidates[0]
@@ -194,8 +237,14 @@ def run_fitting(
 
     clinical = {
         "design_id": design_id,
+        "design_version": f"V{revision + 1}",
         "patient_id": patient_id,
         "clinical_dataset_id": clinical_dataset_id,
+        "prediction_id": _stable_id("PRD", {
+            "design_id": design_id,
+            "dataset": clinical_dataset_id,
+            "model_id": model_id,
+        }),
         "phenotype": phenotype,
         "indices": indices,
         "eyes": {
@@ -256,6 +305,21 @@ def run_fitting(
             out_of_range=out_of_range,
         ),
         "prediction_confidence": confidence,
+        "prediction_confidence_category": (
+            "High" if confidence >= 82 else "Moderate" if confidence >= 70 else "Low"
+        ),
+        "prediction_state": response_state,
+        "predicted_response": {
+            "distribution": None,
+            "calibrated": calibrated_distribution_available,
+            "display_allowed": calibrated_distribution_available,
+            "status": (
+                "Available" if calibrated_distribution_available
+                else response_state if out_of_range or confidence < 70
+                else "Not calibrated for clinical probability reporting"
+            ),
+        },
+        "key_clinical_contributors": contributors,
         "confidence_breakdown": {
             "measurement_coverage": round(coverage * 100, 1),
             "measurement_plausibility": round(plausible * 100, 1),
@@ -278,13 +342,20 @@ def run_fitting(
         ),
         "manufacturing_status": "Ready",
         "primary_goal": p.primary_goal,
+        "optimization_objective": p.primary_goal,
         # Which predictor and parameter set produced this. Essential once a
         # learned model is in play: a stored result must name what made it.
         "engine": od_metrics["provenance"],
         "clinical_recommendation": (
-            "Review inputs before approval" if out_of_range
+            "Extended assessment recommended before approval" if out_of_range
+            else "Consider enhanced assessment before approval" if confidence < 70
             else "Recommendation ready for clinician approval"
         ),
+        "clinical_guidance": [
+            f"Review axial length in {('6 months' if confidence >= cfg.confidence_for_long_followup else '3 months')}.",
+            "Repeat contrast-sensitivity assessment if comfort declines.",
+            "Use the enhanced phenotype assessment if observed response is below expectation.",
+        ],
     }
 
     # The two optical channels are stored as independent objects, as the V2.1
@@ -308,8 +379,9 @@ def run_fitting(
         "patient_id": patient_id,
         "clinical_dataset_id": clinical_dataset_id,
         "algorithm_version": od_metrics["provenance"].get("predictor_version", "unknown"),
-        "design_engine_version": "2.1",
-        "manufacturing_version": "2.1",
+        "design_engine_version": "2.2",
+        "design_version": f"V{revision + 1}",
+        "manufacturing_version": "2.2",
         # A clinical-only snapshot used later to compare an observed follow-up
         # with the original compatibility signal.  It deliberately stores no
         # optical or manufacturing parameters.
@@ -317,6 +389,7 @@ def run_fitting(
             "myopia_management_fit": clinical["predicted"]["nso_control_score"],
             "prediction_confidence": clinical["prediction_confidence"],
         },
+        "prediction_id": clinical["prediction_id"],
         "reason": reason,
         "outcome_reference": outcome_reference,
         "status": "Proposed",
@@ -324,7 +397,7 @@ def run_fitting(
         "candidates": per_eye,
     }
     patient_created = REGISTRY._record_domain(
-        "patient", patient_id, {"patient_id": patient_id}
+        "patient", patient_id, {"patient_id": patient_id, "site_id": site or cfg.default_site}
     )
     dataset_created = REGISTRY._record_domain("clinical_dataset", clinical_dataset_id, {
         "clinical_dataset_id": clinical_dataset_id,
@@ -335,6 +408,64 @@ def run_fitting(
         REGISTRY._audit(
             "patient_profile_modified", patient_id, object_type="patient"
         )
+    eye_ids = {eye: _stable_id("EYE", {"patient_id": patient_id, "laterality": eye}) for eye in ("OD", "OS")}
+    for eye, eye_id in eye_ids.items():
+        REGISTRY._record_domain("eye", eye_id, {
+            "eye_id": eye_id, "patient_id": patient_id, "laterality": eye,
+        })
+    visit_id = _stable_id("VIS", {"patient_id": patient_id, "dataset": clinical_dataset_id})
+    REGISTRY._record_domain("visit", visit_id, {
+        "visit_id": visit_id,
+        "patient_id": patient_id,
+        "eye_ids": eye_ids,
+        "visit_type": "baseline",
+        "clinical_dataset_id": clinical_dataset_id,
+        "measurements": {
+            "OD": {"AL": p.od.axial_length, "SE": p.od.spherical_equivalent},
+            "OS": {"AL": p.os.axial_length, "SE": p.os.spherical_equivalent},
+            "pupil": p.photopic_pupil,
+            "CSF": p.csf_band,
+            "near_work": p.near_hours,
+            "outdoor_time": p.outdoor_hours,
+        },
+        "provenance": {
+            "OD.AL": "Objective Measurement", "OS.AL": "Objective Measurement",
+            "OD.SE": "Objective Measurement", "OS.SE": "Objective Measurement",
+            "pupil": "Objective Measurement", "CSF": "Clinician Assessment",
+            "near_work": "Behavioral/Environmental",
+            "outdoor_time": "Behavioral/Environmental",
+        },
+    })
+    REGISTRY._record_domain("prediction", clinical["prediction_id"], {
+        "prediction_id": clinical["prediction_id"],
+        "patient_id": patient_id,
+        "eye_ids": eye_ids,
+        "visit_id": visit_id,
+        "design_id": design_id,
+        "model_id": model_id,
+        "model_version": predictor.version,
+        "dataset_version": DATASET_VERSION,
+        "feature_schema_version": predictor.schema_version,
+        "raw_record_id": clinical_dataset_id,
+        "preprocessing_version": SOFTWARE_VERSION,
+        "prediction_confidence": confidence,
+        "prediction_state": response_state,
+        "XAI_contributors": contributors,
+    })
+    execution = governance.record_execution(
+        patient_id=patient_id,
+        eye_ids=eye_ids,
+        visit_id=visit_id,
+        design_id=design_id,
+        design_version=clinical["design_version"],
+        prediction_id=clinical["prediction_id"],
+        model_id=model_id,
+        model_version=predictor.version,
+        feature_schema_version=predictor.schema_version,
+        config_version=cfg.version,
+    )
+    clinical["execution_id"] = execution["execution_id"]
+    design["clinical_snapshot"] = public_clinical(clinical)
     REGISTRY.register(design_id, design)
     return {"clinical": clinical, "design": design}
 
@@ -349,12 +480,16 @@ def clinical_only(p: PatientInput) -> Dict[str, Any]:
 # Explicit public response contract. Adding a new internal field can never
 # accidentally make it cross the clinical API boundary.
 CLINICAL_RESPONSE_FIELDS = frozenset({
-    "design_id", "patient_id", "clinical_dataset_id", "phenotype", "indices",
+    "design_id", "design_version", "patient_id", "clinical_dataset_id",
+    "prediction_id", "execution_id", "phenotype", "indices",
     "eyes", "binocular_pair", "predicted", "spatial_frequency_descriptors",
     "csf_protocol", "interocular_acuity_difference", "explainable_summary",
-    "prediction_confidence", "out_of_range_measurements", "neurovisual_status",
+    "prediction_confidence", "prediction_confidence_category", "prediction_state",
+    "predicted_response", "key_clinical_contributors",
+    "out_of_range_measurements", "neurovisual_status",
     "accommodative_demand_d", "recommended_follow_up", "manufacturing_status",
-    "primary_goal", "clinical_recommendation", "refit",
+    "primary_goal", "optimization_objective", "clinical_recommendation",
+    "clinical_guidance", "refit",
 })
 
 
@@ -401,7 +536,7 @@ CLINICAL_ADVICE = {
 def clinical_followup(
     baseline_al: float,
     followup_al: float,
-    interval_months: int,
+    interval_months: float,
     current_support_level: str = "Level 2",
     *,
     baseline_od_al: float | None = None,
@@ -415,6 +550,10 @@ def clinical_followup(
     compliance: str | None = None,
     original_fit_score: float | None = None,
     original_prediction_confidence: float | None = None,
+    baseline_csf: float | None = None,
+    current_csf: float | None = None,
+    adverse_event: str | None = None,
+    intolerance: str | None = None,
 ) -> Dict[str, Any]:
     """Progression assessment expressed in clinical, not design, terms."""
     cfg = get_config()
@@ -430,6 +569,7 @@ def clinical_followup(
 
     annualized = raw["annualized_delta_al"]
     out = {
+        "interval_months": round(float(interval_months), 3),
         "delta_al": raw["delta_al"],
         "annualized_delta_al": annualized,
         "advice": CLINICAL_ADVICE[raw["advice"]],
@@ -451,11 +591,21 @@ def clinical_followup(
             round(current_comfort - baseline_comfort, 2)
             if baseline_comfort is not None and current_comfort is not None else None
         ),
+        "csf_change": (
+            round(current_csf - baseline_csf, 2)
+            if baseline_csf is not None and current_csf is not None else None
+        ),
     }
+    insufficient = interval_months < 2 or any(
+        value < 18 or value > 35 for value in (od_base, od_follow, os_base, os_follow)
+    )
     needs_review = (
         compliance in {"Poor", "Unknown"}
         or (visual_stress_score is not None and visual_stress_score >= 8)
         or (average_wear_hours is not None and average_wear_hours < 4)
+        or bool(adverse_event)
+        or bool(intolerance)
+        or insufficient
     )
     out["action_class"] = (
         "ADJUST" if needs_review
@@ -467,6 +617,28 @@ def clinical_followup(
         else "Borderline responder" if out["progression_band"] == "Borderline"
         else "Suboptimal responder"
     )
+    out["observed_response_classification"] = (
+        "Insufficient Data" if insufficient
+        else "Good" if out["progression_band"] == "Controlled"
+        else "Moderate" if out["progression_band"] == "Borderline"
+        else "Limited"
+    )
+    out["assessment_status"] = (
+        "Insufficient Data" if insufficient else "Observed Clinical Outcome"
+    )
+    out["safety_observations"] = {
+        "adverse_event": adverse_event,
+        "intolerance": intolerance,
+    }
+    out["clinical_guidance"] = [
+        "Continue axial-length monitoring at the recommended interval.",
+        "Repeat contrast-sensitivity assessment if comfort declines.",
+        (
+            "Review exposure, tolerance and enhanced phenotype data before changing the design."
+            if needs_review
+            else "Continue the current clinical monitoring plan."
+        ),
+    ]
     if original_fit_score is None:
         out["deviation_from_original_prediction"] = None
     else:
@@ -529,7 +701,7 @@ def refit(
     previous_design_id: str,
     baseline_al: float,
     followup_al: float,
-    interval_months: int,
+    interval_months: float,
     site: str | None = None,
 ) -> Dict[str, Any]:
     """Re-fit from observed progression. Returns the clinical layer only."""
@@ -584,6 +756,14 @@ def refit(
         reason="follow-up optimization",
         outcome_reference=outcome_id,
     )["clinical"]
+    previous_prediction_id = previous.get("prediction_id")
+    if previous_prediction_id:
+        REGISTRY._store_impl.append_related("next_prediction", previous_prediction_id, {
+            "prediction_id": clinical["prediction_id"],
+            "design_id": clinical["design_id"],
+            "design_version": clinical["design_version"],
+            "outcome_reference": outcome_id,
+        })
     REGISTRY._audit("design_reoptimized", new_design_id, revision)
     REGISTRY._audit("design_revision_created", new_design_id, revision)
 

@@ -15,12 +15,12 @@ from .config import get_config
 from .csf import CsfMeasurement, from_triplet
 
 PRIMARY_GOALS = (
-    "Myopia Management",
+    "Myopia Control",
     "Visual Comfort",
-    "Digital / Near-work Comfort",
-    "Binocular Visual Support",
-    "Contrast Optimization",
-    "Balanced Optimization",
+    "Near-work Endurance",
+    "Contrast Preservation",
+    "Presbyopia Support",
+    "Neurovisual Comfort",
 )
 
 
@@ -124,7 +124,7 @@ class PatientInput:
     gaze_distribution: Optional[float] = None      # 0-10
 
     # -- Section 6: task & lifestyle ---------------------------------------
-    primary_goal: str = "Myopia Management"
+    primary_goal: str = "Myopia Control"
     near_hours: float = 6.0
     digital_hours: float = 4.0
     outdoor_hours: float = 1.5

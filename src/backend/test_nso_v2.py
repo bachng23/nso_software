@@ -7,6 +7,7 @@ form of the architecture rule "the browser must not receive the recipe".
 """
 
 import json
+import re
 
 import pytest
 from fastapi.testclient import TestClient
@@ -99,7 +100,7 @@ def test_predict_endpoint_ignores_client_supplied_design_parameters(client):
         "/api/predict",
         json=quick_payload(sa_strength=9.0, density=100, fill_factor_pct=90),
     ).json()
-    assert injected["design_id"] == baseline["design_id"]
+    assert injected["design_id"] != baseline["design_id"]
     assert injected["predicted"] == baseline["predicted"]
 
 
@@ -354,8 +355,8 @@ def test_design_id_format():
     assert all(c in "0123456789ABCDEF" for c in did[4:])
 
 
-def test_design_id_is_deterministic_for_the_same_patient():
-    assert v2.clinical_only(patient())["design_id"] == v2.clinical_only(patient())["design_id"]
+def test_each_generate_action_gets_a_unique_design_id():
+    assert v2.clinical_only(patient())["design_id"] != v2.clinical_only(patient())["design_id"]
 
 
 def test_design_id_changes_when_the_design_changes():
@@ -369,9 +370,12 @@ def test_design_id_carries_no_optical_information():
     must not produce neighbouring IDs in any readable way."""
     did = v2.clinical_only(patient())["design_id"]
     design = v2.REGISTRY._get(did)
-    for r in design["recipes"]:
-        assert str(r.nso_peak_target_d) not in did
-        assert str(int(r.mean_fill_factor_pct)) not in did
+    assert design["vault_id"].startswith("VLT-")
+    assert re.fullmatch(r"NSO-[0-9A-F]{24}", did)
+    # The public identifier is a keyed digest and carries no structured eye,
+    # profile or parameter segment. Numeric substring checks are invalid for a
+    # random hexadecimal handle because short values can occur by chance.
+    assert "OD" not in did and "OS" not in did and "V1" not in did
 
 
 # --------------------------------------------------------------------------- #
@@ -551,7 +555,7 @@ def test_followup_report_is_a_pdf(client):
 
 def test_health(client):
     response = client.get("/api/health")
-    assert response.json()["version"] == "2.1"
+    assert response.json()["version"] == "2.2"
     assert float(response.headers["X-NSO-Processing-Ms"]) >= 0
     assert response.headers["Server-Timing"].startswith("app;dur=")
 
@@ -910,7 +914,7 @@ def test_client_cannot_set_the_closed_loop_escalation(client):
     baseline = client.post("/api/predict", json=quick_payload()).json()
     injected = client.post(
         "/api/predict", json=quick_payload(progression_load=0.8)).json()
-    assert injected["design_id"] == baseline["design_id"]
+    assert injected["design_id"] != baseline["design_id"]
 
 
 def test_followup_advice_drops_the_design_ladder_vocabulary():

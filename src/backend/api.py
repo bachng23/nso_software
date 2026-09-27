@@ -25,6 +25,7 @@ import hashlib
 import json
 import os
 import time
+from datetime import date
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, Header, HTTPException, Response
@@ -37,7 +38,7 @@ import report
 _is_production = os.environ.get("NSO_ENV", "development").lower() == "production"
 app = FastAPI(
     title="NSO AI-PC Fitting API",
-    version="2.1",
+    version="2.2",
     docs_url=None if _is_production else "/docs",
     redoc_url=None if _is_production else "/redoc",
     openapi_url=None if _is_production else "/openapi.json",
@@ -108,7 +109,7 @@ def health():
     predictor = v2.get_predictor()
     return {
         "status": "ok",
-        "version": "2.1",
+        "version": "2.2",
         "engine": predictor.name,
         "predictor_version": predictor.version,
         "feature_schema": v2.FeatureVector.SCHEMA_VERSION,
@@ -138,6 +139,7 @@ class EyeIn(BaseModel):
 
 class PredictIn(BaseModel):
     patient_id: Optional[str] = None
+    design_id: Optional[str] = None
     # -- Tier 1: Quick Fitting ---------------------------------------------
     age: float
     od: EyeIn
@@ -151,7 +153,8 @@ class PredictIn(BaseModel):
     near_hours: float = 6.0
     digital_hours: float = 4.0
     outdoor_hours: float = 1.5
-    primary_goal: str = "Myopia Management"
+    primary_goal: str = "Myopia Control"
+    optimization_objective: Optional[str] = None
 
     # -- Tier 2: Advanced Clinical Data ------------------------------------
     mesopic_pupil: Optional[float] = None
@@ -216,6 +219,8 @@ class PredictIn(BaseModel):
         # only what PatientInput actually declares.
         allowed = set(v2.PatientInput.__dataclass_fields__)
         data = {k: v for k, v in self.model_dump().items() if k in allowed}
+        if self.optimization_objective:
+            data["primary_goal"] = self.optimization_objective
         return v2.PatientInput(
             od=v2.EyeInput(**self.od.model_dump()),
             os=v2.EyeInput(**self.os.model_dump()),
@@ -232,7 +237,9 @@ class FollowupIn(BaseModel):
     followup_od_al: Optional[float] = None
     baseline_os_al: Optional[float] = None
     followup_os_al: Optional[float] = None
-    interval_months: int
+    interval_months: Optional[float] = None
+    baseline_date: Optional[str] = None
+    followup_date: Optional[str] = None
     # Clinical support level, not the internal design tier.
     current_support_level: str = "Level 2"
     baseline_od_refraction: Optional[EyeIn] = None
@@ -244,24 +251,33 @@ class FollowupIn(BaseModel):
     visual_stress_score: Optional[float] = None
     average_wear_hours: Optional[float] = None
     compliance: Optional[str] = None
+    baseline_csf: Optional[float] = None
+    current_csf: Optional[float] = None
+    adverse_event: Optional[str] = None
+    intolerance: Optional[str] = None
 
 
 class FollowupReportIn(PredictIn):
     """Full patient inputs (for the prediction body) + the follow-up readings,
     so the follow-up report is the prediction report with a follow-up section."""
-    design_id: Optional[str] = None
     baseline_al: Optional[float] = None
     followup_al: Optional[float] = None
     baseline_od_al: Optional[float] = None
     followup_od_al: Optional[float] = None
     baseline_os_al: Optional[float] = None
     followup_os_al: Optional[float] = None
-    interval_months: int
+    interval_months: Optional[float] = None
+    baseline_date: Optional[str] = None
+    followup_date: Optional[str] = None
     baseline_comfort: Optional[float] = None
     current_comfort: Optional[float] = None
     visual_stress_score_followup: Optional[float] = None
     average_wear_hours: Optional[float] = None
     compliance: Optional[str] = None
+    baseline_csf: Optional[float] = None
+    current_csf: Optional[float] = None
+    adverse_event: Optional[str] = None
+    intolerance: Optional[str] = None
 
 
 class ManufacturingSubmitIn(BaseModel):
@@ -286,8 +302,11 @@ class ClinicalResponse(BaseModel):
     """Browser-visible allowlist; unknown internal fields are rejected."""
     model_config = ConfigDict(extra="forbid")
     design_id: str
+    design_version: str
     patient_id: str
     clinical_dataset_id: str
+    prediction_id: str
+    execution_id: str
     phenotype: Dict[str, Any]
     indices: Dict[str, Any]
     eyes: Dict[str, Any]
@@ -298,18 +317,25 @@ class ClinicalResponse(BaseModel):
     interocular_acuity_difference: Any
     explainable_summary: List[str]
     prediction_confidence: int
+    prediction_confidence_category: str
+    prediction_state: str
+    predicted_response: Dict[str, Any]
+    key_clinical_contributors: List[Dict[str, Any]]
     out_of_range_measurements: List[Dict[str, Any]]
     neurovisual_status: str
     accommodative_demand_d: Optional[float]
     recommended_follow_up: str
     manufacturing_status: str
     primary_goal: str
+    optimization_objective: str
     clinical_recommendation: str
+    clinical_guidance: List[str]
     refit: Optional[Dict[str, Any]] = None
 
 
 class FollowupResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    interval_months: float
     delta_al: float
     annualized_delta_al: float
     advice: str
@@ -321,6 +347,11 @@ class FollowupResponse(BaseModel):
     comfort_change: Optional[float]
     action_class: str
     responder_status: str
+    observed_response_classification: str
+    assessment_status: str
+    clinical_guidance: List[str]
+    csf_change: Optional[float]
+    safety_observations: Dict[str, Any]
     deviation_from_original_prediction: Optional[Dict[str, Any]]
     exposure: Dict[str, Any]
 
@@ -340,11 +371,46 @@ class RefitIn(PredictIn):
     previous_design_id: str
     baseline_al: float
     followup_al: float
-    interval_months: int
+    interval_months: float
 
 
-def _clinical(inp: PredictIn) -> dict:
+class OverrideIn(BaseModel):
+    prediction_id: str
+    ai_recommendation: str
+    clinician_selection: str
+    reason: str
+    actor: str = "clinician"
+
+
+def _followup_interval(
+    interval_months: Optional[float], baseline_date: Optional[str], followup_date: Optional[str]
+) -> float:
+    if baseline_date and followup_date:
+        try:
+            days = (date.fromisoformat(followup_date) - date.fromisoformat(baseline_date)).days
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="Dates must use YYYY-MM-DD") from exc
+        if days <= 0:
+            raise HTTPException(status_code=422, detail="Follow-up date must be after baseline date")
+        return round(days / 30.4375, 3)
+    if interval_months is None or interval_months <= 0:
+        raise HTTPException(
+            status_code=422,
+            detail="Provide a positive interval_months or both baseline_date and followup_date",
+        )
+    return float(interval_months)
+
+
+def _clinical(inp: PredictIn, *, reuse_design: bool = False) -> dict:
     """Run the fitting and return the screened clinical payload."""
+    if reuse_design and inp.design_id:
+        if not v2.REGISTRY.known(inp.design_id):
+            raise HTTPException(status_code=404, detail="Unknown design ID")
+        snapshot = v2.REGISTRY._get(inp.design_id).get("clinical_snapshot")
+        if snapshot is None:
+            raise HTTPException(status_code=409, detail="Design predates report snapshots")
+        v2.assert_no_design_leak(snapshot)
+        return snapshot
     result = v2.public_clinical_only(inp.to_patient(), patient_id=inp.patient_id)
     return result
 
@@ -366,8 +432,11 @@ def followup(inp: FollowupIn):
         if not v2.REGISTRY.known(inp.design_id):
             raise HTTPException(status_code=404, detail="Unknown design ID")
         expectation = v2.REGISTRY._get(inp.design_id).get("clinical_expectation", {})
+    interval_months = _followup_interval(
+        inp.interval_months, inp.baseline_date, inp.followup_date
+    )
     result = v2.clinical_followup(
-        baseline, current, inp.interval_months, inp.current_support_level,
+        baseline, current, interval_months, inp.current_support_level,
         baseline_od_al=inp.baseline_od_al, followup_od_al=inp.followup_od_al,
         baseline_os_al=inp.baseline_os_al, followup_os_al=inp.followup_os_al,
         baseline_comfort=inp.baseline_comfort, current_comfort=inp.current_comfort,
@@ -375,11 +444,40 @@ def followup(inp: FollowupIn):
         average_wear_hours=inp.average_wear_hours, compliance=inp.compliance,
         original_fit_score=expectation.get("myopia_management_fit"),
         original_prediction_confidence=expectation.get("prediction_confidence"),
+        baseline_csf=inp.baseline_csf, current_csf=inp.current_csf,
+        adverse_event=inp.adverse_event, intolerance=inp.intolerance,
     )
     if inp.design_id:
         outcome_id = "OUT-" + hashlib.sha256(
             json.dumps(inp.model_dump(), sort_keys=True, default=str).encode()
         ).hexdigest()[:20].upper()
+        design_record = v2.REGISTRY._get(inp.design_id)
+        prediction_id = design_record.get("prediction_id")
+        prediction_record = (
+            v2.REGISTRY._domain_record("prediction", prediction_id)
+            if prediction_id else {}
+        )
+        followup_visit_id = "VIS-" + hashlib.sha256(
+            f"{outcome_id}:followup".encode()
+        ).hexdigest()[:20].upper()
+        v2.REGISTRY._record_domain("visit", followup_visit_id, {
+            "visit_id": followup_visit_id,
+            "patient_id": inp.patient_id or design_record.get("patient_id"),
+            "eye_ids": prediction_record.get("eye_ids", {}),
+            "visit_type": "followup",
+            "visit_date": inp.followup_date,
+            "baseline_date": inp.baseline_date,
+            "interval_months": interval_months,
+            "measurements": inp.model_dump(),
+            "provenance": {
+                "axial_length": "Objective Measurement",
+                "refraction": "Objective Measurement",
+                "comfort": "Patient-Reported Outcome",
+                "compliance": "Behavioral/Environmental",
+                "adverse_event": "Clinician Assessment",
+                "intolerance": "Patient-Reported Outcome",
+            },
+        })
         v2.REGISTRY._record_outcome(outcome_id, inp.design_id, {
             "outcome_id": outcome_id,
             "design_id": inp.design_id,
@@ -387,7 +485,34 @@ def followup(inp: FollowupIn):
             "raw": inp.model_dump(),
             "derived": result,
         })
+        if prediction_id:
+            v2.REGISTRY._store_impl.append_related("prediction_outcome", prediction_id, {
+                "outcome_id": outcome_id,
+                "design_id": inp.design_id,
+                "observed_response_classification": result["observed_response_classification"],
+            })
     return result
+
+
+@app.post("/api/clinical/override")
+def clinical_override(inp: OverrideIn):
+    governance = v2.GovernanceRegistry(v2.REGISTRY._store_impl)
+    try:
+        return governance.record_override(**inp.model_dump())
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Unknown prediction ID")
+    except v2.GovernanceError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/api/governance/lineage/{execution_id}")
+def execution_lineage(execution_id: str):
+    try:
+        lineage = v2.GovernanceRegistry(v2.REGISTRY._store_impl).lineage(execution_id)
+        v2.assert_no_design_leak(lineage)
+        return lineage
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Unknown execution ID")
 
 
 @app.post("/api/design/approve")
@@ -493,14 +618,14 @@ def _pdf_response(pdf_bytes: bytes, filename: str) -> Response:
 
 @app.post("/api/report/prediction")
 def report_prediction(inp: PredictIn):
-    result = _clinical(inp)
+    result = _clinical(inp, reuse_design=True)
     pdf = report.build_report(inp.model_dump(), result)
     return _pdf_response(pdf, "nso-report.pdf")
 
 
 @app.post("/api/report/followup")
 def report_followup(inp: FollowupReportIn):
-    result = _clinical(inp)
+    result = _clinical(inp, reuse_design=True)
     baseline = inp.baseline_al if inp.baseline_al is not None else inp.baseline_od_al
     current = inp.followup_al if inp.followup_al is not None else inp.followup_od_al
     if baseline is None or current is None:
@@ -510,8 +635,11 @@ def report_followup(inp: FollowupReportIn):
         if not v2.REGISTRY.known(inp.design_id):
             raise HTTPException(status_code=404, detail="Unknown design ID")
         expectation = v2.REGISTRY._get(inp.design_id).get("clinical_expectation", {})
+    interval_months = _followup_interval(
+        inp.interval_months, inp.baseline_date, inp.followup_date
+    )
     fu = v2.clinical_followup(
-        baseline, current, inp.interval_months,
+        baseline, current, interval_months,
         baseline_od_al=inp.baseline_od_al, followup_od_al=inp.followup_od_al,
         baseline_os_al=inp.baseline_os_al, followup_os_al=inp.followup_os_al,
         baseline_comfort=inp.baseline_comfort, current_comfort=inp.current_comfort,
@@ -519,6 +647,8 @@ def report_followup(inp: FollowupReportIn):
         average_wear_hours=inp.average_wear_hours, compliance=inp.compliance,
         original_fit_score=expectation.get("myopia_management_fit"),
         original_prediction_confidence=expectation.get("prediction_confidence"),
+        baseline_csf=inp.baseline_csf, current_csf=inp.current_csf,
+        adverse_event=inp.adverse_event, intolerance=inp.intolerance,
     )
     followup_block = {
         "ctx": {
@@ -528,7 +658,7 @@ def report_followup(inp: FollowupReportIn):
             "followup_od_al": inp.followup_od_al,
             "baseline_os_al": inp.baseline_os_al,
             "followup_os_al": inp.followup_os_al,
-            "interval_months": inp.interval_months,
+            "interval_months": interval_months,
         },
         "result": fu,
     }

@@ -17,8 +17,8 @@ const RESULT_TIERS = {
 };
 
 const PRIMARY_GOALS = [
-  "Myopia Management", "Visual Comfort", "Digital / Near-work Comfort",
-  "Binocular Visual Support", "Contrast Optimization", "Balanced Optimization",
+  "Myopia Control", "Visual Comfort", "Near-work Endurance",
+  "Contrast Preservation", "Presbyopia Support", "Neurovisual Comfort",
 ];
 
 const INDEX_LABELS = [
@@ -67,7 +67,7 @@ const DEFAULTS = {
   near_phoria_direction: "Exo", near_phoria_magnitude: 4, npc: 9, accommodative_lag: 1.1,
   csf_band: "Normal", visual_stress_score: 6,
   near_hours: 7, digital_hours: 5, outdoor_hours: 0.8,
-  primary_goal: "Myopia Management",
+  primary_goal: "Myopia Control",
 };
 
 const ADV_DEFAULTS = {
@@ -123,6 +123,8 @@ export default function Page() {
     baselineOsSphere: -3.0, currentOsSphere: -3.0,
     interval: 6, baselineComfort: 7, currentComfort: 7,
     stress: 3, wear: 10, compliance: "Good",
+    baselineDate: "2026-01-01", followupDate: "2026-07-01",
+    baselineCsf: "", currentCsf: "", adverseEvent: "", intolerance: "",
   });
   const [fuRes, setFuRes] = useState(null);
   const [fuPending, setFuPending] = useState(false);
@@ -164,7 +166,7 @@ export default function Page() {
       near_hours: num(inp.near_hours),
       digital_hours: Math.min(num(inp.digital_hours), num(inp.near_hours)),
       outdoor_hours: num(inp.outdoor_hours),
-      primary_goal: inp.primary_goal,
+      optimization_objective: inp.primary_goal,
 
       mesopic_pupil: orNull(adv.mesopic_pupil),
       distance_phoria: orNull(adv.distance_phoria),
@@ -237,7 +239,9 @@ export default function Page() {
   }
 
   const exportPrediction = () =>
-    downloadPdf("/api/report/prediction", predictBody(), "nso-report.pdf");
+    downloadPdf("/api/report/prediction", {
+      ...predictBody(), design_id: pred?.design_id || null,
+    }, "nso-report.pdf");
 
   const downloadFollowupReport = () =>
     downloadPdf("/api/report/followup", {
@@ -249,6 +253,9 @@ export default function Page() {
       baseline_comfort: num(fu.baselineComfort), current_comfort: num(fu.currentComfort),
       visual_stress_score_followup: num(fu.stress), average_wear_hours: num(fu.wear),
       compliance: fu.compliance,
+      baseline_date: fu.baselineDate, followup_date: fu.followupDate,
+      baseline_csf: orNull(fu.baselineCsf), current_csf: orNull(fu.currentCsf),
+      adverse_event: fu.adverseEvent || null, intolerance: fu.intolerance || null,
     }, "nso-report.pdf");
 
   async function runPredict() {
@@ -343,7 +350,7 @@ export default function Page() {
           previous_design_id: pred.design_id,
           baseline_al: useOd ? num(fu.baselineOd) : num(fu.baselineOs),
           followup_al: useOd ? num(fu.followupOd) : num(fu.followupOs),
-          interval_months: Math.round(num(fu.interval)),
+          interval_months: fuRes ? fuRes.interval_months : Math.round(num(fu.interval)),
         }),
       });
       if (!r.ok) throw new Error(`API error ${r.status}`);
@@ -375,6 +382,9 @@ export default function Page() {
           baseline_comfort: num(s.baselineComfort), current_comfort: num(s.currentComfort),
           visual_stress_score: num(s.stress), average_wear_hours: num(s.wear),
           compliance: s.compliance,
+          baseline_date: s.baselineDate, followup_date: s.followupDate,
+          baseline_csf: orNull(s.baselineCsf), current_csf: orNull(s.currentCsf),
+          adverse_event: s.adverseEvent || null, intolerance: s.intolerance || null,
           baseline_od_refraction: { sphere: num(s.baselineOdSphere) },
           followup_od_refraction: { sphere: num(s.currentOdSphere) },
           baseline_os_refraction: { sphere: num(s.baselineOsSphere) },
@@ -409,7 +419,7 @@ export default function Page() {
         <div className="brand">
           <span className="brand-mark" />
           <span className="brand-name">NSO AI-PC Fitting Platform</span>
-          <span className="brand-ver">V2.1 · Clinical Decision Support — Knowledge-guided personalization engine</span>
+          <span className="brand-ver">V2.2 · Clinical Decision Support — Knowledge-guided personalization engine</span>
         </div>
         <div className="badge">
           <span className="badge-dot" />
@@ -481,7 +491,7 @@ function Screen1({ inp, set, setInp, adv, setA, setAdv, advOpen, setAdvOpen,
       </p>
 
       <div className="card lift" style={{ marginTop: 20 }}>
-        <TierHead n="1" title="QUICK FITTING" note="13 clinical data groups · everything the engine needs" />
+        <TierHead n="1" title="CORE CLINICAL INPUTS" note="13 core clinical data groups · sufficient for initial recommendation" />
 
         <div className="cap cap-sm" style={{ margin: "18px 0 12px" }}>PATIENT &amp; REFRACTION</div>
         <div className="grid2">
@@ -523,15 +533,15 @@ function Screen1({ inp, set, setInp, adv, setA, setAdv, advOpen, setAdvOpen,
             value={inp.outdoor_hours} onChange={set("outdoor_hours")} hint="Target ≥ 2 h/day" />
         </div>
         <div style={{ marginTop: 20, maxWidth: "50%" }}>
-          <SelectField label="Primary visual goal" unit="optimization target"
+          <SelectField label="Optimization objective" unit="clinical target"
             value={inp.primary_goal} onChange={set("primary_goal")} options={PRIMARY_GOALS} />
         </div>
 
         <div className="divider" style={{ margin: "24px 0 16px" }} />
 
         <Disclosure open={advOpen} toggle={() => setAdvOpen(!advOpen)}
-          label="Tier 2 · Advanced Clinical Data"
-          note="Full binocular, accommodative and neurovisual workup">
+          label="Tier 2 · Enhanced Assessment"
+          note="Optional confidence enhancement for borderline or complex cases">
           <div className="cap cap-sm" style={{ margin: "6px 0 12px" }}>BINOCULAR VISION</div>
           <div className="grid2">
             <NumField label="Distance phoria" unit="Δ · optional" step="0.5"
@@ -591,8 +601,8 @@ function Screen1({ inp, set, setInp, adv, setA, setAdv, advOpen, setAdvOpen,
         </Disclosure>
 
         <Disclosure open={resOpen} toggle={() => setResOpen(!resOpen)}
-          label="Tier 3 · Research Mode"
-          note="CSF protocol, electrophysiology, eye tracking, wavefront">
+          label="Tier 3 · Advanced / Research Assessment"
+          note="Optional advanced characterization and longitudinal modeling">
           <div className="cap cap-sm" style={{ margin: "6px 0 12px" }}>SPATIAL FREQUENCY CURVE</div>
           <div className="grid2">
             <NumField label="Low spatial frequency CSF" unit="optional" step="1" value={res.csf_low} onChange={setR("csf_low")} />
@@ -743,6 +753,15 @@ function TextField({ label, unit, value, onChange, placeholder }) {
   );
 }
 
+function DateField({ label, value, onChange }) {
+  return (
+    <div className="field">
+      <label>{label}</label>
+      <input type="date" value={value} onChange={onChange} />
+    </div>
+  );
+}
+
 function SelectField({ label, unit, value, onChange, options, pending }) {
   return (
     <div className={pending ? "field field-pending" : "field"}>
@@ -804,9 +823,9 @@ function Screen2({ pred, job, approval, submitting, onApprove, onSubmit, go, onF
       <div className="design-hero">
         <div>
           <div className="metric-cap">RECOMMENDED PERSONALIZED OPTICAL DESIGN</div>
-          <div className="design-id">{pred.design_id}</div>
+          <div className="design-id">{pred.design_id} · {pred.design_version}</div>
           <div className="metric-sub">
-            Phenotype {pred.phenotype.code} · {pred.binocular_pair} pair · optimized for {pred.primary_goal.toLowerCase()}
+            Phenotype {pred.phenotype.code} · {pred.binocular_pair} pair · optimized for {pred.optimization_objective.toLowerCase()}
           </div>
           {pred.refit && (
             <div className="refit-note">
@@ -819,6 +838,25 @@ function Screen2({ pred, job, approval, submitting, onApprove, onSubmit, go, onF
           <div><span className="eye-tag">OD</span> {pred.eyes.OD.profile_label}</div>
           <div><span className="eye-tag">OS</span> {pred.eyes.OS.profile_label}</div>
         </div>
+      </div>
+
+      <div className="cap cap-sm" style={{ margin: "20px 0 10px" }}>MODEL PREDICTION · PRE-TREATMENT ESTIMATE</div>
+      <div className="card" style={{ padding: 20, marginBottom: 16 }}>
+        <div className="grid2">
+          <ReadRow label="Prediction status" value={pred.prediction_state} />
+          <ReadRow label="Confidence category" value={`${pred.prediction_confidence_category} · ${conf}%`} />
+          <ReadRow label="Response distribution" value={
+            pred.predicted_response.display_allowed
+              ? "Validated distribution available"
+              : pred.predicted_response.status
+          } />
+          <ReadRow label="Recommendation" value={pred.clinical_recommendation} />
+        </div>
+        {!pred.predicted_response.display_allowed && (
+          <div className="medical-disclaimer">
+            Precise response probabilities are withheld until a calibrated production model and in-range data are available.
+          </div>
+        )}
       </div>
 
       <div className="cap cap-sm" style={{ margin: "20px 0 10px" }}>VISUAL PHENOTYPE — FIVE DOMAINS</div>
@@ -893,9 +931,20 @@ function Screen2({ pred, job, approval, submitting, onApprove, onSubmit, go, onF
       )}
 
       <div className="card" style={{ padding: 20, marginBottom: 16 }}>
+        <div className="cap cap-sm" style={{ marginBottom: 12 }}>KEY CLINICAL CONTRIBUTORS</div>
+        <div className="grid2" style={{ marginBottom: 14 }}>
+          {pred.key_clinical_contributors.map((item) => (
+            <ReadRow key={item.factor} label={item.factor}
+              value={`${item.observed_value} · clinical relevance ${item.relative_influence}`} />
+          ))}
+        </div>
         <div className="cap cap-sm" style={{ marginBottom: 12 }}>WHY THIS RECOMMENDATION</div>
         <ul className="reasons">
           {pred.explainable_summary.map((line, i) => <li key={i}>{line}</li>)}
+        </ul>
+        <div className="cap cap-sm" style={{ margin: "16px 0 8px" }}>CLINICAL GUIDANCE</div>
+        <ul className="reasons">
+          {pred.clinical_guidance.map((line, i) => <li key={i}>{line}</li>)}
         </ul>
         <div className="ip-note">Authorized record <strong>{pred.design_id}</strong> is held in the secure vault.</div>
       </div>
@@ -995,6 +1044,10 @@ function Screen3({ fu, setFuVal, res, pending, designId, go, onDownload, onRefit
 
       <div className="card lift" style={{ marginTop: 20, marginBottom: 16 }}>
         <div className="cap" style={{ marginBottom: 16 }}>AXIAL-LENGTH READINGS · OD / OS</div>
+        <div className="grid2" style={{ marginBottom: 18 }}>
+          <DateField label="Baseline date" value={fu.baselineDate} onChange={setFuVal("baselineDate")} />
+          <DateField label="Follow-up date" value={fu.followupDate} onChange={setFuVal("followupDate")} />
+        </div>
         <div className="grid2" style={{ marginBottom: 24 }}>
           <NumField label="OD baseline AL" unit="mm" step="0.01" value={fu.baselineOd} onChange={setFuVal("baselineOd")} />
           <NumField label="OD follow-up AL" unit="mm" step="0.01" value={fu.followupOd} onChange={setFuVal("followupOd")} />
@@ -1003,7 +1056,7 @@ function Screen3({ fu, setFuVal, res, pending, designId, go, onDownload, onRefit
         </div>
         <div className="slider" style={{ maxWidth: "50%" }}>
           <div className="slider-head">
-            <label>Follow-up interval</label>
+            <label>Fallback interval (used when visit dates are unavailable)</label>
             <span className="slider-val">{fu.interval} <span className="unit">months</span></span>
           </div>
           <input type="range" min="1" max="12" step="1" value={fu.interval} onChange={setFuVal("interval")} />
@@ -1025,6 +1078,10 @@ function Screen3({ fu, setFuVal, res, pending, designId, go, onDownload, onRefit
           <NumField label="Average wear" unit="h/day" step="0.5" value={fu.wear} onChange={setFuVal("wear")} />
           <SelectField label="Compliance" unit="" value={fu.compliance}
             onChange={setFuVal("compliance")} options={["Good", "Partial", "Poor", "Unknown"]} />
+          <NumField label="Baseline CSF" unit="optional" step="0.1" value={fu.baselineCsf} onChange={setFuVal("baselineCsf")} />
+          <NumField label="Current CSF" unit="optional" step="0.1" value={fu.currentCsf} onChange={setFuVal("currentCsf")} />
+          <TextField label="Adverse event" unit="optional" value={fu.adverseEvent} onChange={setFuVal("adverseEvent")} />
+          <TextField label="Intolerance" unit="optional" value={fu.intolerance} onChange={setFuVal("intolerance")} />
         </div>
       </div>
 
@@ -1035,15 +1092,15 @@ function Screen3({ fu, setFuVal, res, pending, designId, go, onDownload, onRefit
           sub={res ? `${fmt(res.eyes.OS.annualized_delta_al)} mm/yr annualized` : "Baseline → follow-up"} />
         <Metric cap="ANNUALIZED ΔAL" big={res ? `${fmt(res.annualized_delta_al)} mm/yr` : "—"}
           sub="Conservative binocular rate" />
-        <Metric cap="RESPONDER CLASSIFICATION" big={res ? res.responder_status : "—"}
+        <Metric cap="OBSERVED RESPONSE" big={res ? res.observed_response_classification : "—"}
           sub={pending ? "Updating assessment…" : "Observed follow-up response"} />
       </div>
 
       {res && (
         <div className="card" style={{ padding: 16, marginBottom: 16 }}>
-          <div className="cap cap-sm" style={{ marginBottom: 12 }}>CLOSED-LOOP MANAGEMENT</div>
+          <div className="cap cap-sm" style={{ marginBottom: 12 }}>OBSERVED CLINICAL OUTCOME · CLOSED LOOP</div>
           <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-            <FlowStep label="Observed response" value={res.responder_status} />
+            <FlowStep label="Observed response" value={res.observed_response_classification} />
             <Arrow />
             <FlowStep label="Original prediction" value={
               res.deviation_from_original_prediction
@@ -1069,6 +1126,9 @@ function Screen3({ fu, setFuVal, res, pending, designId, go, onDownload, onRefit
                 ? "Review wear, compliance and clinical factors before changing the design."
                 : "Continue the current design and reassess at the scheduled interval."}
           </div>
+          <ul className="reasons" style={{ marginTop: 12 }}>
+            {res.clinical_guidance.map((line, i) => <li key={i}>{line}</li>)}
+          </ul>
         </div>
       )}
 
@@ -1087,7 +1147,7 @@ function Screen3({ fu, setFuVal, res, pending, designId, go, onDownload, onRefit
         <div style={{ display: "flex", gap: 10 }}>
           <button className="btn btn-ghost" onClick={onDownload}>Download follow-up report ⤓</button>
           <button className="btn btn-primary" disabled={!canRefit || refitting} onClick={onRefit}>
-            {refitting ? "Re-fitting…" : "Re-fit from this visit →"}
+            {refitting ? "Generating…" : "Generate Next Recommendation →"}
           </button>
         </div>
       </div>

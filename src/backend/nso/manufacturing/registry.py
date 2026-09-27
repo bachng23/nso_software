@@ -151,10 +151,14 @@ class DesignRegistry:
     def _record_outcome(
         self, outcome_id: str, design_id: str, payload: Dict[str, Any]
     ) -> None:
+        prediction_id = payload.get("prediction_id")
+        if prediction_id is None and self.known(design_id):
+            prediction_id = self._get(design_id).get("prediction_id")
         self._store_impl.put_record("outcome", outcome_id, {
             "outcome_id": outcome_id,
             "design_id": design_id,
             "patient_id": payload.get("patient_id"),
+            "prediction_id": prediction_id,
             "raw_record_id": f"{outcome_id}:raw" if "raw" in payload else None,
             "derived_record_id": f"{outcome_id}:derived",
         })
@@ -205,6 +209,18 @@ class DesignRegistry:
         if existing:
             return existing[-1]
         self._store_impl.append_related("approval", design_id, approval)
+        treatment_id = "TRT-" + hashlib.sha256(
+            f"{design_id}:{approval['approved_at']}".encode()
+        ).hexdigest()[:20].upper()
+        self._store_impl.put_record("treatment", treatment_id, {
+            "treatment_id": treatment_id,
+            "patient_id": entry.get("patient_id"),
+            "prediction_id": entry.get("prediction_id"),
+            "design_id": design_id,
+            "approval_actor": actor,
+            "approved_at": approval["approved_at"],
+            "status": "Approved",
+        })
         self._audit("design_approved", design_id, entry.get("revision", 0), actor=actor)
         return approval
 
@@ -322,7 +338,7 @@ class DesignRegistry:
             "segment": segment,
             "oem_id": oem_id,
             "oem_capability_version": capability_version,
-            "projection_version": "2.1",
+            "projection_version": "2.2",
             "issued_at": now.isoformat(timespec="seconds"),
             "expires_at": (now + timedelta(hours=24)).isoformat(timespec="seconds"),
         }
