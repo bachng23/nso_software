@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, Header, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 import nso as v2
 import report
@@ -135,6 +135,13 @@ class EyeIn(BaseModel):
     axis: float = 0.0
     axial_length: float = 24.0
     bcva_logmar: Optional[float] = None
+    orientation_id: Optional[str] = None
+    nominal_axis_deg: Optional[float] = None
+    settled_rotation_deg: Optional[float] = None
+    rotation_sd_deg: Optional[float] = None
+    recovery_time_s: Optional[float] = None
+    asymmetry_index: Optional[float] = None
+    temporal_nasal_ratio: Optional[float] = None
 
 
 class PredictIn(BaseModel):
@@ -304,6 +311,7 @@ class ClinicalResponse(BaseModel):
     design_id: str
     design_version: str
     patient_id: str
+    case_id: Optional[str] = None
     clinical_dataset_id: str
     prediction_id: str
     execution_id: str
@@ -336,6 +344,7 @@ class ClinicalResponse(BaseModel):
 class FollowupResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
     interval_months: float
+    followup_days: int
     delta_al: float
     annualized_delta_al: float
     advice: str
@@ -382,9 +391,156 @@ class OverrideIn(BaseModel):
     actor: str = "clinician"
 
 
-def _followup_interval(
+class CaseIn(BaseModel):
+    patient_id: str
+    indication_code: str = "MYOPIA_CONTROL"
+    site_id: str = "SG"
+    clinician_id: str
+
+
+class MeasurementIn(BaseModel):
+    measurement_type: str
+    value: Any = None
+    eye_id: Optional[str] = None
+    laterality: Optional[str] = None
+    unit: Optional[str] = None
+    source: str = "objective"
+    device_id: Optional[str] = None
+    quality_flag: str = "ACCEPTED"
+    missing_data_flag: Optional[bool] = None
+
+
+class VisitIn(BaseModel):
+    visit_code: str
+    visit_type: str
+    visit_date: str
+    clinician_id: str
+    site_id: str = "SG"
+    measurements: List[MeasurementIn]
+
+
+class ExposureIn(BaseModel):
+    case_id: str
+    eye_id: str
+    lot_id: str
+    exposure_start: str
+    exposure_end: Optional[str] = None
+    compliance: Optional[str] = None
+    replacement_reason: Optional[str] = None
+
+
+class QcMeasurementIn(BaseModel):
+    lot_id: str
+    measurement_type: str
+    target: Optional[float] = None
+    actual: Optional[float] = None
+    unit: str
+    passed: bool
+    measurement_data: Dict[str, Any] = Field(default_factory=dict)
+
+
+class OutcomeV2In(BaseModel):
+    case_id: str
+    visit_id: str
+    eye_id: str
+    baseline_visit_id: str
+    exposure_id: str
+    baseline_al_mm: float
+    followup_al_mm: float
+    followup_days: int
+    baseline_se_d: Optional[float] = None
+    followup_se_d: Optional[float] = None
+    baseline_csf: Optional[float] = None
+    followup_csf: Optional[float] = None
+    comfort_score: Optional[float] = None
+    adaptation_score: Optional[float] = None
+    compliance: Optional[str] = None
+    adverse_event: Optional[str] = None
+
+
+class EligibilityIn(BaseModel):
+    minimum_followup_days: int = 150
+
+
+class DatasetVersionIn(BaseModel):
+    version: str
+    case_ids: List[str]
+    inclusion_rules: Dict[str, Any]
+    schema_version: str = "2.2.1"
+    feature_set_version: str = "1.1.0"
+
+
+class ModelRegisterIn(BaseModel):
+    family: str
+    version: str
+    feature_schema_version: str
+    training_dataset_version: str
+    algorithm: str
+    objective_function_version: str = "1.0.0"
+    artifact_uri: Optional[str] = None
+    artifact_hash: Optional[str] = None
+    code_version: Optional[str] = None
+    deployment_context: str = "clinical-pilot"
+    indication: str = "MYOPIA_CONTROL"
+    initial_status: str = "Development"
+
+
+class ModelValidationIn(BaseModel):
+    gate_results: Dict[str, Any]
+    dataset_version: str
+    actor: str = "model-validator"
+
+
+class ModelApprovalIn(BaseModel):
+    actor: str
+    comment: str
+
+
+class ModelPromotionIn(BaseModel):
+    actor: str
+
+
+class ModelRollbackIn(BaseModel):
+    current_model_id: str
+    target_model_id: str
+    actor: str
+    reason: str
+
+
+class TrainingRunIn(BaseModel):
+    dataset_version_id: str
+    model_id: str
+    algorithm: str
+    hyperparameters: Dict[str, Any]
+    random_seed: int
+    objective_function_version: str
+    code_version: str
+    environment_version: str
+    metrics: Dict[str, Any]
+    artifact_uri: str
+    artifact_hash: str
+
+
+def _authorize_internal(role: str, permission: str, api_key: str) -> None:
+    """RBAC plus optional shared-key enforcement for non-clinical V2 APIs.
+
+    Development remains usable without configuration. Production fails closed
+    unless ``NSO_INTERNAL_API_KEY`` is set and supplied by the caller.
+    """
+    configured = os.environ.get("NSO_INTERNAL_API_KEY", "")
+    if _is_production and not configured:
+        raise HTTPException(status_code=503, detail="Internal API authentication is not configured")
+    if configured and api_key != configured:
+        raise HTTPException(status_code=401, detail="Invalid internal API key")
+    try:
+        v2.ClinicalDigitalThread.authorize(role, permission)
+    except v2.EngineeringError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+def _followup_timing(
     interval_months: Optional[float], baseline_date: Optional[str], followup_date: Optional[str]
-) -> float:
+) -> tuple[float, int]:
     if baseline_date and followup_date:
         try:
             days = (date.fromisoformat(followup_date) - date.fromisoformat(baseline_date)).days
@@ -392,13 +548,21 @@ def _followup_interval(
             raise HTTPException(status_code=422, detail="Dates must use YYYY-MM-DD") from exc
         if days <= 0:
             raise HTTPException(status_code=422, detail="Follow-up date must be after baseline date")
-        return round(days / 30.4375, 3)
+        return round(days / 30.4375, 3), days
     if interval_months is None or interval_months <= 0:
         raise HTTPException(
             status_code=422,
             detail="Provide a positive interval_months or both baseline_date and followup_date",
         )
-    return float(interval_months)
+    months = float(interval_months)
+    return months, max(1, round(months * 30.4375))
+
+
+def _followup_interval(
+    interval_months: Optional[float], baseline_date: Optional[str], followup_date: Optional[str]
+) -> float:
+    """Compatibility wrapper retained for report and legacy callers."""
+    return _followup_timing(interval_months, baseline_date, followup_date)[0]
 
 
 def _clinical(inp: PredictIn, *, reuse_design: bool = False) -> dict:
@@ -432,11 +596,12 @@ def followup(inp: FollowupIn):
         if not v2.REGISTRY.known(inp.design_id):
             raise HTTPException(status_code=404, detail="Unknown design ID")
         expectation = v2.REGISTRY._get(inp.design_id).get("clinical_expectation", {})
-    interval_months = _followup_interval(
+    interval_months, followup_days = _followup_timing(
         inp.interval_months, inp.baseline_date, inp.followup_date
     )
     result = v2.clinical_followup(
         baseline, current, interval_months, inp.current_support_level,
+        followup_days=followup_days,
         baseline_od_al=inp.baseline_od_al, followup_od_al=inp.followup_od_al,
         baseline_os_al=inp.baseline_os_al, followup_os_al=inp.followup_os_al,
         baseline_comfort=inp.baseline_comfort, current_comfort=inp.current_comfort,
@@ -460,24 +625,38 @@ def followup(inp: FollowupIn):
         followup_visit_id = "VIS-" + hashlib.sha256(
             f"{outcome_id}:followup".encode()
         ).hexdigest()[:20].upper()
-        v2.REGISTRY._record_domain("visit", followup_visit_id, {
-            "visit_id": followup_visit_id,
-            "patient_id": inp.patient_id or design_record.get("patient_id"),
-            "eye_ids": prediction_record.get("eye_ids", {}),
-            "visit_type": "followup",
-            "visit_date": inp.followup_date,
-            "baseline_date": inp.baseline_date,
-            "interval_months": interval_months,
-            "measurements": inp.model_dump(),
-            "provenance": {
-                "axial_length": "Objective Measurement",
-                "refraction": "Objective Measurement",
-                "comfort": "Patient-Reported Outcome",
-                "compliance": "Behavioral/Environmental",
-                "adverse_event": "Clinician Assessment",
-                "intolerance": "Patient-Reported Outcome",
-            },
-        })
+        case_id = design_record.get("case_id")
+        if case_id:
+            eye_ids = prediction_record.get("eye_ids", {})
+            rows = []
+            for eye_key, value in (("OD", inp.followup_od_al), ("OS", inp.followup_os_al)):
+                rows.append({
+                    "measurement_type": "axial_length",
+                    "value": value,
+                    "unit": "mm",
+                    "eye_id": eye_ids.get(eye_key),
+                    "laterality": eye_key,
+                    "source": "objective",
+                })
+            rows.extend([
+                {"measurement_type": "comfort", "value": inp.current_comfort, "unit": "score_0_10", "source": "patient-reported"},
+                {"measurement_type": "csf", "value": inp.current_csf, "unit": "index", "source": "objective"},
+                {"measurement_type": "wear_hours", "value": inp.average_wear_hours, "unit": "hours/day", "source": "behavioral"},
+            ])
+            try:
+                v2.ClinicalDigitalThread(v2.REGISTRY._store_impl).record_visit(
+                    case_id=case_id,
+                    visit_id=followup_visit_id,
+                    visit_code=f"FU-{followup_days}D",
+                    visit_type="unscheduled",
+                    visit_date=inp.followup_date or date.today().isoformat(),
+                    clinician_id="unassigned",
+                    site_id=design_record.get("site", "SG"),
+                    measurements=rows,
+                    actor="clinician",
+                )
+            except v2.EngineeringError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
         v2.REGISTRY._record_outcome(outcome_id, inp.design_id, {
             "outcome_id": outcome_id,
             "design_id": inp.design_id,
@@ -513,6 +692,269 @@ def execution_lineage(execution_id: str):
         return lineage
     except KeyError:
         raise HTTPException(status_code=404, detail="Unknown execution ID")
+
+
+# --------------------------------------------------------------------------- #
+# V2.2 engineering API.  These endpoints operate on immutable normalized
+# domain objects.  Existing /api/predict and /api/followup remain as the
+# clinician-friendly orchestration layer.
+# --------------------------------------------------------------------------- #
+
+def _thread() -> v2.ClinicalDigitalThread:
+    return v2.ClinicalDigitalThread(v2.REGISTRY._store_impl)
+
+
+@app.post("/api/v2/cases")
+def create_case(
+    inp: CaseIn,
+    x_nso_role: str = Header(default="clinician"),
+    x_internal_api_key: str = Header(default=""),
+):
+    _authorize_internal(x_nso_role, "clinical:write", x_internal_api_key)
+    try:
+        return _thread().create_case(**inp.model_dump(), actor=x_nso_role)
+    except (KeyError, v2.EngineeringError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/api/v2/cases/{case_id}/visits")
+def create_visit(
+    case_id: str,
+    inp: VisitIn,
+    x_nso_role: str = Header(default="clinician"),
+    x_internal_api_key: str = Header(default=""),
+):
+    _authorize_internal(x_nso_role, "clinical:write", x_internal_api_key)
+    try:
+        payload = inp.model_dump()
+        payload["measurements"] = [m.model_dump() for m in inp.measurements]
+        return _thread().record_visit(
+            case_id=case_id, **payload, actor=x_nso_role
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Unknown case ID") from exc
+    except v2.EngineeringError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/api/v2/trace/{case_id}")
+def case_trace(
+    case_id: str,
+    x_nso_role: str = Header(default="clinician"),
+    x_internal_api_key: str = Header(default=""),
+):
+    _authorize_internal(x_nso_role, "trace:read", x_internal_api_key)
+    try:
+        return _thread().trace_case(case_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Unknown case ID") from exc
+
+
+@app.post("/api/v2/exposures")
+def create_exposure(
+    inp: ExposureIn,
+    x_nso_role: str = Header(default="clinician"),
+    x_internal_api_key: str = Header(default=""),
+):
+    _authorize_internal(x_nso_role, "outcome:write", x_internal_api_key)
+    try:
+        return _thread().record_exposure(**inp.model_dump(), actor=x_nso_role)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"Unknown referenced object: {exc}") from exc
+    except v2.EngineeringError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/api/v2/qc-measurements")
+def create_qc_measurement(
+    inp: QcMeasurementIn,
+    x_nso_role: str = Header(default="manufacturing_engineer"),
+    x_internal_api_key: str = Header(default=""),
+):
+    _authorize_internal(x_nso_role, "qc:write", x_internal_api_key)
+    try:
+        return _thread().record_qc(**inp.model_dump(), actor=x_nso_role)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Unknown manufacturing lot") from exc
+
+
+@app.post("/api/v2/outcomes")
+def create_outcome(
+    inp: OutcomeV2In,
+    x_nso_role: str = Header(default="clinician"),
+    x_internal_api_key: str = Header(default=""),
+):
+    _authorize_internal(x_nso_role, "outcome:write", x_internal_api_key)
+    try:
+        return _thread().record_outcome(**inp.model_dump(), actor=x_nso_role)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"Unknown referenced object: {exc}") from exc
+    except v2.EngineeringError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/api/v2/cases/{case_id}/training-eligibility")
+def training_eligibility(
+    case_id: str,
+    inp: EligibilityIn,
+    x_nso_role: str = Header(default="data_scientist"),
+    x_internal_api_key: str = Header(default=""),
+):
+    _authorize_internal(x_nso_role, "dataset:write", x_internal_api_key)
+    try:
+        return _thread().evaluate_training_eligibility(
+            case_id=case_id,
+            minimum_followup_days=inp.minimum_followup_days,
+            actor=x_nso_role,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Unknown case ID") from exc
+
+
+@app.post("/api/v2/datasets")
+def create_dataset_version(
+    inp: DatasetVersionIn,
+    x_nso_role: str = Header(default="data_scientist"),
+    x_internal_api_key: str = Header(default=""),
+):
+    _authorize_internal(x_nso_role, "dataset:write", x_internal_api_key)
+    governance = v2.GovernanceRegistry(v2.REGISTRY._store_impl)
+    try:
+        return governance.create_dataset_version(**inp.model_dump(), actor=x_nso_role)
+    except v2.GovernanceError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/api/v2/training-runs")
+def create_training_run(
+    inp: TrainingRunIn,
+    x_nso_role: str = Header(default="ml_engineer"),
+    x_internal_api_key: str = Header(default=""),
+):
+    _authorize_internal(x_nso_role, "training:write", x_internal_api_key)
+    try:
+        return v2.GovernanceRegistry(v2.REGISTRY._store_impl).record_training_run(
+            **inp.model_dump(), actor=x_nso_role
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"Unknown referenced object: {exc}") from exc
+
+
+@app.post("/api/v2/models")
+def register_model(
+    inp: ModelRegisterIn,
+    x_nso_role: str = Header(default="ml_engineer"),
+    x_internal_api_key: str = Header(default=""),
+):
+    _authorize_internal(x_nso_role, "model:write", x_internal_api_key)
+    try:
+        return v2.GovernanceRegistry(v2.REGISTRY._store_impl).register_model(
+            **inp.model_dump(), actor=x_nso_role
+        )
+    except v2.GovernanceError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/api/v2/models")
+def list_models(
+    x_nso_role: str = Header(default="model_validator"),
+    x_internal_api_key: str = Header(default=""),
+):
+    _authorize_internal(x_nso_role, "validation:write", x_internal_api_key)
+    governance = v2.GovernanceRegistry(v2.REGISTRY._store_impl)
+    return [
+        {**record, "status": governance.model_status(record["model_id"])}
+        for record in v2.REGISTRY._store_impl.list_records("model")
+    ]
+
+
+@app.post("/api/v2/models/{model_id}/validate")
+def validate_model(
+    model_id: str,
+    inp: ModelValidationIn,
+    x_nso_role: str = Header(default="model_validator"),
+    x_internal_api_key: str = Header(default=""),
+):
+    _authorize_internal(x_nso_role, "validation:write", x_internal_api_key)
+    try:
+        return v2.GovernanceRegistry(v2.REGISTRY._store_impl).validate_candidate(
+            model_id, inp.gate_results,
+            dataset_version=inp.dataset_version,
+            actor=inp.actor,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Unknown model ID") from exc
+    except v2.GovernanceError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/api/v2/models/{model_id}/candidate")
+def nominate_model_candidate(
+    model_id: str,
+    inp: ModelPromotionIn,
+    x_nso_role: str = Header(default="ml_engineer"),
+    x_internal_api_key: str = Header(default=""),
+):
+    _authorize_internal(x_nso_role, "model:write", x_internal_api_key)
+    try:
+        return v2.GovernanceRegistry(v2.REGISTRY._store_impl).nominate_candidate(
+            model_id, actor=inp.actor
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Unknown model ID") from exc
+    except v2.GovernanceError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/api/v2/models/{model_id}/approve")
+def approve_model(
+    model_id: str,
+    inp: ModelApprovalIn,
+    x_nso_role: str = Header(default="model_validator"),
+    x_internal_api_key: str = Header(default=""),
+):
+    _authorize_internal(x_nso_role, "model:approve", x_internal_api_key)
+    try:
+        return v2.GovernanceRegistry(v2.REGISTRY._store_impl).approve_model(
+            model_id, actor=inp.actor, comment=inp.comment
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Unknown model ID") from exc
+    except v2.GovernanceError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/api/v2/models/{model_id}/promote")
+def promote_model(
+    model_id: str,
+    inp: ModelPromotionIn,
+    x_nso_role: str = Header(default="model_validator"),
+    x_internal_api_key: str = Header(default=""),
+):
+    _authorize_internal(x_nso_role, "model:approve", x_internal_api_key)
+    try:
+        return v2.GovernanceRegistry(v2.REGISTRY._store_impl).promote_model(
+            model_id, actor=inp.actor
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Unknown model ID") from exc
+    except v2.GovernanceError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/api/v2/models/rollback")
+def rollback_model(
+    inp: ModelRollbackIn,
+    x_nso_role: str = Header(default="model_validator"),
+    x_internal_api_key: str = Header(default=""),
+):
+    _authorize_internal(x_nso_role, "model:approve", x_internal_api_key)
+    try:
+        return v2.GovernanceRegistry(v2.REGISTRY._store_impl).rollback_model(**inp.model_dump())
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"Unknown model ID: {exc}") from exc
+    except v2.GovernanceError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.post("/api/design/approve")
@@ -635,11 +1077,11 @@ def report_followup(inp: FollowupReportIn):
         if not v2.REGISTRY.known(inp.design_id):
             raise HTTPException(status_code=404, detail="Unknown design ID")
         expectation = v2.REGISTRY._get(inp.design_id).get("clinical_expectation", {})
-    interval_months = _followup_interval(
+    interval_months, followup_days = _followup_timing(
         inp.interval_months, inp.baseline_date, inp.followup_date
     )
     fu = v2.clinical_followup(
-        baseline, current, interval_months,
+        baseline, current, interval_months, followup_days=followup_days,
         baseline_od_al=inp.baseline_od_al, followup_od_al=inp.followup_od_al,
         baseline_os_al=inp.baseline_os_al, followup_os_al=inp.followup_os_al,
         baseline_comfort=inp.baseline_comfort, current_comfort=inp.current_comfort,

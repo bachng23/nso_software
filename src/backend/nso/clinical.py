@@ -12,6 +12,7 @@ import hashlib
 import json
 import uuid
 from dataclasses import asdict, replace
+from datetime import date
 from typing import Any, Dict, List
 
 import nso_core as engine
@@ -28,7 +29,9 @@ from .features import (
     out_of_range_measurements,
     plausibility,
     plausibly_measured_domains,
+    patient_features,
 )
+from .engineering import ClinicalDigitalThread
 from .governance import (
     DATASET_VERSION,
     GovernanceRegistry,
@@ -240,6 +243,8 @@ def run_fitting(
         "design_version": f"V{revision + 1}",
         "patient_id": patient_id,
         "clinical_dataset_id": clinical_dataset_id,
+        # Assigned below when the immutable clinical episode is created.
+        "case_id": None,
         "prediction_id": _stable_id("PRD", {
             "design_id": design_id,
             "dataset": clinical_dataset_id,
@@ -413,34 +418,69 @@ def run_fitting(
         REGISTRY._record_domain("eye", eye_id, {
             "eye_id": eye_id, "patient_id": patient_id, "laterality": eye,
         })
-    visit_id = _stable_id("VIS", {"patient_id": patient_id, "dataset": clinical_dataset_id})
-    REGISTRY._record_domain("visit", visit_id, {
-        "visit_id": visit_id,
-        "patient_id": patient_id,
-        "eye_ids": eye_ids,
-        "visit_type": "baseline",
-        "clinical_dataset_id": clinical_dataset_id,
-        "measurements": {
-            "OD": {"AL": p.od.axial_length, "SE": p.od.spherical_equivalent},
-            "OS": {"AL": p.os.axial_length, "SE": p.os.spherical_equivalent},
-            "pupil": p.photopic_pupil,
-            "CSF": p.csf_band,
-            "near_work": p.near_hours,
-            "outdoor_time": p.outdoor_hours,
-        },
-        "provenance": {
-            "OD.AL": "Objective Measurement", "OS.AL": "Objective Measurement",
-            "OD.SE": "Objective Measurement", "OS.SE": "Objective Measurement",
-            "pupil": "Objective Measurement", "CSF": "Clinician Assessment",
-            "near_work": "Behavioral/Environmental",
-            "outdoor_time": "Behavioral/Environmental",
-        },
-    })
+    thread = ClinicalDigitalThread(REGISTRY._store_impl)
+    case = thread.create_case(
+        patient_id=patient_id,
+        indication_code="MYOPIA_CONTROL",
+        site_id=site or cfg.default_site,
+        clinician_id="unassigned",
+        actor="system",
+    )
+    case_id = case["case_id"]
+    clinical["case_id"] = case_id
+    design["case_id"] = case_id
+    visit_id = _stable_id("VIS", {"case_id": case_id, "dataset": clinical_dataset_id})
+    measurement_rows = []
+    for eye_key, eye in (("OD", p.od), ("OS", p.os)):
+        eye_id = eye_ids[eye_key]
+        for measurement_type, value, unit in (
+            ("orientation_id", eye.orientation_id, "identifier"),
+            ("sphere", eye.sphere, "D"),
+            ("cylinder", eye.cylinder, "D"),
+            ("axis", eye.axis, "deg"),
+            ("axial_length", eye.axial_length, "mm"),
+            ("spherical_equivalent", eye.spherical_equivalent, "D"),
+            ("nominal_axis", eye.nominal_axis_deg, "deg"),
+            ("settled_rotation", eye.settled_rotation_deg, "deg"),
+            ("rotation_sd", eye.rotation_sd_deg, "deg"),
+            ("recovery_time", eye.recovery_time_s, "s"),
+            ("asymmetry_index", eye.asymmetry_index, "index"),
+            ("temporal_nasal_ratio", eye.temporal_nasal_ratio, "ratio"),
+        ):
+            measurement_rows.append({
+                "measurement_type": measurement_type,
+                "value": value,
+                "unit": unit,
+                "eye_id": eye_id,
+                "laterality": eye_key,
+                "source": "objective",
+            })
+    thread.record_visit(
+        case_id=case_id,
+        visit_id=visit_id,
+        visit_code="BASELINE",
+        visit_type="baseline",
+        visit_date=date.today().isoformat(),
+        clinician_id="unassigned",
+        site_id=site or cfg.default_site,
+        measurements=measurement_rows,
+        actor="system",
+    )
+    feature_record = thread.record_feature_vector(
+        case_id=case_id,
+        visit_id=visit_id,
+        features=patient_features(p).values,
+        feature_set_version=predictor.schema_version,
+        raw_input=patient_snapshot,
+        actor="system",
+    )
     REGISTRY._record_domain("prediction", clinical["prediction_id"], {
         "prediction_id": clinical["prediction_id"],
         "patient_id": patient_id,
         "eye_ids": eye_ids,
         "visit_id": visit_id,
+        "case_id": case_id,
+        "feature_vector_id": feature_record["feature_vector_id"],
         "design_id": design_id,
         "model_id": model_id,
         "model_version": predictor.version,
@@ -464,9 +504,48 @@ def run_fitting(
         feature_schema_version=predictor.schema_version,
         config_version=cfg.version,
     )
+    REGISTRY._record_domain("inference", clinical["prediction_id"], {
+        "inference_id": clinical["prediction_id"],
+        "case_id": case_id,
+        "visit_id": visit_id,
+        "feature_vector_id": feature_record["feature_vector_id"],
+        "model_id": model_id,
+        "model_version": predictor.version,
+        "design_id": design_id,
+        "prediction": {
+            "confidence": confidence,
+            "state": response_state,
+        },
+        "explanation": contributors,
+        "created_at": execution["timestamp"],
+    })
+    REGISTRY._record_domain("design_version", design_id, {
+        "design_id": design_id,
+        "design_version": clinical["design_version"],
+        "case_id": case_id,
+        "inference_id": clinical["prediction_id"],
+        "previous_design_id": previous_design_id,
+        "reason": reason,
+        "created_at": execution["timestamp"],
+    })
     clinical["execution_id"] = execution["execution_id"]
     design["clinical_snapshot"] = public_clinical(clinical)
     REGISTRY.register(design_id, design)
+    thread.register_recipe(
+        design_id=design_id,
+        design_version=clinical["design_version"],
+        parameters={
+            "OD": asdict(od_recipe),
+            "OS": asdict(os_recipe),
+        },
+        tolerances={
+            "sag_error_mm": cfg.sag_tolerance_mm,
+            "element_height_error_mm": cfg.height_tolerance_mm,
+            "element_position_error_mm": cfg.position_tolerance_mm,
+            "decentration_mm": cfg.decentration_tolerance_mm,
+        },
+        actor="system",
+    )
     return {"clinical": clinical, "design": design}
 
 
@@ -480,7 +559,7 @@ def clinical_only(p: PatientInput) -> Dict[str, Any]:
 # Explicit public response contract. Adding a new internal field can never
 # accidentally make it cross the clinical API boundary.
 CLINICAL_RESPONSE_FIELDS = frozenset({
-    "design_id", "design_version", "patient_id", "clinical_dataset_id",
+    "design_id", "design_version", "patient_id", "case_id", "clinical_dataset_id",
     "prediction_id", "execution_id", "phenotype", "indices",
     "eyes", "binocular_pair", "predicted", "spatial_frequency_descriptors",
     "csf_protocol", "interocular_acuity_difference", "explainable_summary",
@@ -539,6 +618,7 @@ def clinical_followup(
     interval_months: float,
     current_support_level: str = "Level 2",
     *,
+    followup_days: int | None = None,
     baseline_od_al: float | None = None,
     followup_od_al: float | None = None,
     baseline_os_al: float | None = None,
@@ -564,12 +644,20 @@ def clinical_followup(
     os_follow = followup_os_al if followup_os_al is not None else followup_al
     od_raw = engine.run_followup(od_base, od_follow, interval_months, tier)
     os_raw = engine.run_followup(os_base, os_follow, interval_months, tier)
+    if followup_days is not None:
+        if followup_days <= 0:
+            raise ValueError("followup_days must be positive")
+        for eye_result in (od_raw, os_raw):
+            eye_result["annualized_delta_al"] = round(
+                eye_result["delta_al"] * 365.25 / followup_days, 3
+            )
     raw = od_raw if od_raw["annualized_delta_al"] >= os_raw["annualized_delta_al"] else os_raw
     next_level = SUPPORT_LEVELS[raw["next_profile"]]
 
     annualized = raw["annualized_delta_al"]
     out = {
         "interval_months": round(float(interval_months), 3),
+        "followup_days": int(followup_days or round(interval_months * 30.4375)),
         "delta_al": raw["delta_al"],
         "annualized_delta_al": annualized,
         "advice": CLINICAL_ADVICE[raw["advice"]],

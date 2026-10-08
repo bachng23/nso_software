@@ -164,7 +164,7 @@ def test_model_candidate_requires_all_gates_and_never_auto_deploys():
         dataset_version="pilot-1",
     )
     assert failed["passed"] is False
-    assert governance.model_status(model["model_id"]) == "Retired"
+    assert governance.model_status(model["model_id"]) == "Rejected"
     with pytest.raises(nso.GovernanceError, match="validated candidate"):
         governance.promote_model(model["model_id"], actor="medical-director")
 
@@ -183,6 +183,9 @@ def test_validated_model_needs_explicit_human_promotion():
     )
     assert passed["passed"] is True
     assert governance.model_status(model["model_id"]) == "Validated"
+    governance.approve_model(
+        model["model_id"], actor="validation-board", comment="All gates passed."
+    )
     governance.promote_model(model["model_id"], actor="medical-director")
     assert governance.model_status(model["model_id"]) == "Production"
 
@@ -190,10 +193,10 @@ def test_validated_model_needs_explicit_human_promotion():
 def test_retraining_trigger_creates_candidate_permission_not_deployment():
     governance = nso.GovernanceRegistry(nso.InMemoryDesignStore())
     before = governance.retraining_trigger(
-        observation_count=499, dataset_version="pilot-1"
+        observation_count=49, dataset_version="pilot-1"
     )
     after = governance.retraining_trigger(
-        observation_count=500, dataset_version="pilot-2"
+        observation_count=50, dataset_version="pilot-2"
     )
     assert before["candidate_allowed"] is False
     assert after["candidate_allowed"] is True

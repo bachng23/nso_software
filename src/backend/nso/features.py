@@ -509,7 +509,7 @@ class FeatureVector:
     a model trained on position 7 keeps reading position 7.
     """
 
-    SCHEMA_VERSION = "1.0.0"
+    SCHEMA_VERSION = "1.1.0"
 
     kind: str                    # "patient" or "design"
     values: Dict[str, float]
@@ -579,6 +579,20 @@ def patient_features(p: PatientInput) -> FeatureVector:
 
     # Optional measurements, each with a measured/not-measured indicator.
     optional = {
+        "od_nominal_axis_deg": p.od.nominal_axis_deg,
+        "od_settled_rotation_deg": p.od.settled_rotation_deg,
+        "od_rotation_sd_deg": p.od.rotation_sd_deg,
+        "od_recovery_time_s": p.od.recovery_time_s,
+        "od_asymmetry_index": p.od.asymmetry_index,
+        # Clinical observation, deliberately named differently from the
+        # proprietary design parameter guarded by ``ip.py``.
+        "od_clinical_tn_ratio": p.od.temporal_nasal_ratio,
+        "os_nominal_axis_deg": p.os.nominal_axis_deg,
+        "os_settled_rotation_deg": p.os.settled_rotation_deg,
+        "os_rotation_sd_deg": p.os.rotation_sd_deg,
+        "os_recovery_time_s": p.os.recovery_time_s,
+        "os_asymmetry_index": p.os.asymmetry_index,
+        "os_clinical_tn_ratio": p.os.temporal_nasal_ratio,
         "mesopic_pupil": p.mesopic_pupil,
         "pfv": p.pfv,
         "nfv": p.nfv,

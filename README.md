@@ -87,7 +87,8 @@ nso/
     base.py             Predictor protocol, OutcomePrediction, registry
     rule_based.py       today's deterministic rules
   features.py         ← the ML seam: versioned feature vectors + training rows
-  governance.py       immutable model registry, validation gates, versions and lineage
+  governance.py       immutable model/dataset/training registry, validation, deployment and rollback
+  engineering.py      normalized clinical/physical-product digital thread and RBAC policy
   phenotype.py        R/B/S/N/T grading
   patient.py          clinical input (six sections)
   recipe.py           the design recipe (Design IP) — dependency-free
@@ -111,7 +112,9 @@ Other modules:
 - `nso_core.py` — the legacy computation kernel and the design-strength profiles.
 - `api.py` — FastAPI: `/api/predict`, `/api/followup`, `/api/refit`,
   `/api/clinical/override`, `/api/governance/lineage/*`,
-  `/api/manufacturing/*`, `/api/report/*`, `/api/health`.
+  `/api/manufacturing/*`, `/api/report/*`, `/api/health`, and governed
+  `/api/v2/cases`, `/api/v2/trace`, `/api/v2/exposures`, `/api/v2/outcomes`,
+  `/api/v2/datasets`, `/api/v2/training-runs`, `/api/v2/models` lifecycle APIs.
 - `report.py` — clinical-layer PDF report. Carries the Design ID, not the recipe.
 - `nso_v2.py` — deprecated shim re-exporting `nso`, kept so the pre-package test
   suite runs unchanged and proves the split was behaviour-preserving.
@@ -168,9 +171,9 @@ class GradientBoostedPredictor:
 nso.register(GradientBoostedPredictor(), activate=True)
 ```
 
-The candidate must then pass all six validation gates and receive explicit
-human promotion in the model registry; registration alone never replaces the
-production model. Nothing else changes. The design space, the loss weights and the clinical
+The candidate must then pass every independent validation gate, receive a
+separate human approval, and be explicitly promoted in the model registry;
+registration alone never replaces the production model. Nothing else changes. The design space, the loss weights and the clinical
 payload are untouched, because the predictor answers *what will happen* while
 `design/candidates.py` decides *what we value* — a model can change the forecast
 without silently changing clinical priorities. Every result is stamped with the

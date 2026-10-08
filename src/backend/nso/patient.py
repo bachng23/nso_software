@@ -32,6 +32,16 @@ class EyeInput:
     axis: float = 0.0
     axial_length: float = 24.0
     bcva_logmar: Optional[float] = None
+    # Longitudinal orientation/rotation measurements introduced by the final
+    # V2.2 engineering specification.  They are recorded now even while the
+    # rule engine does not use them, so future models have a stable schema.
+    orientation_id: Optional[str] = None
+    nominal_axis_deg: Optional[float] = None
+    settled_rotation_deg: Optional[float] = None
+    rotation_sd_deg: Optional[float] = None
+    recovery_time_s: Optional[float] = None
+    asymmetry_index: Optional[float] = None
+    temporal_nasal_ratio: Optional[float] = None
 
     @property
     def spherical_equivalent(self) -> float:

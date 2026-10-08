@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict
 
 from ..config import get_config
+from ..engineering import ClinicalDigitalThread
 from .compensation import compensated_placement
 from .geometry import surface_map
 from .store import DesignStore, default_store
@@ -255,6 +257,43 @@ class DesignRegistry:
                 for code in SEGMENT_CODES
             ],
         }
+        recipe_versions = [
+            record for record in self._store_impl.list_records("recipe_version")
+            if record.get("design_id") == design_id
+        ]
+        if not recipe_versions:
+            # Compatibility migration for designs registered through the
+            # pre-V2.2 registry API.  The first manufacturing submission
+            # freezes their existing vault recipe into Recipe Version 1.
+            migrated = ClinicalDigitalThread(self._store_impl).register_recipe(
+                design_id=design_id,
+                design_version=str(entry.get("design_version", "V1")),
+                parameters={
+                    getattr(recipe, "eye", f"eye-{index}"): asdict(recipe)
+                    for index, recipe in enumerate(entry.get("recipes", ()))
+                },
+                tolerances={
+                    "sag_error_mm": cfg.sag_tolerance_mm,
+                    "element_height_error_mm": cfg.height_tolerance_mm,
+                    "element_position_error_mm": cfg.position_tolerance_mm,
+                    "decentration_mm": cfg.decentration_tolerance_mm,
+                },
+                actor="system-migration",
+            )
+            recipe_versions = [
+                self._store_impl.get_record("recipe_version", migrated["recipe_version_id"])
+            ]
+        recipe_version = sorted(recipe_versions, key=lambda r: r["version"])[-1]
+        lot = ClinicalDigitalThread(self._store_impl).create_manufacturing_lot(
+            recipe_version_id=recipe_version["recipe_version_id"],
+            lot_code=job_id,
+            material_code="UNSPECIFIED",
+            process_version="2.2",
+            manufacturer_id="UNASSIGNED",
+            facility_id=site or cfg.default_site,
+            actor="system",
+        )
+        job["lot_id"] = lot["lot_id"]
         self._store_impl.put_record("manufacturing", job_id, job)
         return job
 

@@ -28,6 +28,7 @@ from typing import Any, Dict
 
 from ..config import get_config
 from ..ip import assert_no_design_leak
+from ..engineering import ClinicalDigitalThread
 from .registry import REGISTRY
 
 
@@ -76,6 +77,27 @@ def geometric_verification(
          "manufacturing_id": manufacturing_id,
          "checked_at": checked_at},
     )
+    if manufacturing_id:
+        try:
+            job = REGISTRY._store_impl.get_record("manufacturing", manufacturing_id)
+            lot_id = job.get("lot_id")
+            if lot_id:
+                thread = ClinicalDigitalThread(REGISTRY._store_impl)
+                for check in checks:
+                    thread.record_qc(
+                        lot_id=lot_id,
+                        measurement_type=check["check"],
+                        target=check["limit"],
+                        actual=check["measured"],
+                        unit="mm",
+                        passed=check["pass"],
+                        measurement_data={"verification_type": "geometric"},
+                        actor="verification-station",
+                    )
+        except KeyError:
+            # Legacy callers may verify by design without a governed lot. The
+            # response remains valid but is not eligible for closed-loop ML.
+            pass
 
     out = {
         "design_id": design_id,

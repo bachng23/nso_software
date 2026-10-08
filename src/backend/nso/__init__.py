@@ -70,6 +70,14 @@ from .features import (
     training_row,
 )
 from .ip import DesignLeakError, assert_no_design_leak
+from .engineering import (
+    ClinicalDigitalThread,
+    ELIGIBILITY_STATES,
+    EngineeringError,
+    MEASUREMENT_DEFINITIONS,
+    ROLE_PERMISSIONS,
+    VISIT_TYPES,
+)
 from .governance import (
     CLINICAL_SCHEMA_VERSION,
     DATASET_VERSION,
@@ -143,4 +151,6 @@ __all__ = [
     "GovernanceRegistry", "GovernanceError", "VALIDATION_GATES",
     "MODEL_STATUSES", "PRODUCT_FAMILIES", "SOFTWARE_VERSION",
     "CLINICAL_SCHEMA_VERSION", "DATASET_VERSION", "model_id_for",
+    "ClinicalDigitalThread", "EngineeringError", "ELIGIBILITY_STATES",
+    "MEASUREMENT_DEFINITIONS", "ROLE_PERMISSIONS", "VISIT_TYPES",
 ]

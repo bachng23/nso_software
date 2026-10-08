@@ -29,7 +29,7 @@ records required for a controlled clinical pilot.
 
 The immutable domain store now carries:
 
-`Patient -> Eye -> Visit -> Design -> Prediction -> Treatment -> Outcome`
+`Patient -> Case -> Eye -> Visit -> Measurement -> Feature Vector -> Inference -> Design Version -> Recipe Version -> Manufacturing Lot -> QC -> Product Exposure -> Clinical Outcome`
 
 Every prediction also creates an Execution Record containing software, clinical
 schema, feature schema, model, dataset, configuration, design and product-family
@@ -38,27 +38,34 @@ patient-reported or behavioral/environmental.
 
 ## Model governance
 
-- Models are immutable registry records with Candidate, Validated, Production
-  and Retired status transitions.
-- Candidate validation requires all six gates: data quality, internal
-  performance, clinical performance, subgroup validation, safety guardrails
-  and human approval.
+- Models are immutable registry records with Development, Candidate, Validated,
+  Production, Retired and Rejected status transitions.
+- Candidate validation requires data quality, internal performance, clinical
+  performance, subgroup, robustness, manufacturing-feasibility and safety
+  gates. Human approval is a separate record after validation.
 - Retraining triggers only permit candidate creation. They never deploy a model
   automatically.
 - Promotion to production is a separate explicit human action.
+- Rollback creates an immutable deployment event and restores a previously
+  validated/retired model; it never rewrites history.
 - Clinician overrides preserve both the system recommendation and clinician
   selection, require a reason and are eligible for later learning analysis.
 
 ## Clinical Digital Thread
 
-Each execution can be traced through raw record ID, preprocessing version,
-feature schema, model, prediction, Design ID, treatment, observed outcome and
-next prediction. The lineage response contains identifiers and clinical
-metadata only and is screened by the same black-box guard as the clinical API.
+`GET /api/v2/trace/{case_id}` reconstructs the clinical, design, physical
+product, outcome and learning lifecycle. Recipe parameters and tolerances stay
+in the restricted backend record and are redacted from the trace response.
+
+The production PostgreSQL target schema is defined in
+`src/backend/schema_v22.sql`. The portable immutable store remains the runtime
+adapter for SQLite and test deployments.
 
 ## Verification
 
-The V2.2 acceptance suite is `src/backend/test_v22_acceptance.py`. It covers
+The V2.2 acceptance suites are `src/backend/test_v22_acceptance.py` and
+`src/backend/test_engineering_spec.py`. They cover
 version chains, probability suppression, OOD behavior, date-derived follow-up,
 insufficient-data handling, all model gates, controlled promotion, retraining,
-override audit, lineage and black-box response safety.
+override audit, lineage, Recipe/Lot/QC/Exposure records, dataset freezing,
+training, validation, approval, deployment, rollback and black-box safety.
